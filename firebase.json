@@ -1,0 +1,45 @@
+{
+  "firestore": {
+    "rules": "firestore.rules"
+  },
+  "functions": {
+    "source": "functions",
+    "runtime": "nodejs22"
+  },
+  "hosting": {
+    "public": ".",
+    "ignore": [
+      "firebase.json",
+      "firestore.rules",
+      "**/.*",
+      "**/node_modules/**",
+      "functions/**",
+      "README.md",
+      "package.json",
+      "package-lock.json"
+    ],
+    "rewrites": [
+      {
+        "source": "/api/mercadopago/config",
+        "function": {
+          "functionId": "mercadopagoConfig",
+          "region": "southamerica-east1"
+        }
+      },
+      {
+        "source": "/api/mercadopago/order",
+        "function": {
+          "functionId": "mercadopagoOrder",
+          "region": "southamerica-east1"
+        }
+      },
+      {
+        "source": "/api/mercadopago/webhook",
+        "function": {
+          "functionId": "mercadopagoWebhook",
+          "region": "southamerica-east1"
+        }
+      }
+    ]
+  }
+}

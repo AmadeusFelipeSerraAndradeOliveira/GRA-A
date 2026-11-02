@@ -1,0 +1,99 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn() && (
+        request.auth.token.admin == true
+        || exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function validProduct(data) {
+      return data.keys().hasAll(['name', 'price', 'stock', 'sizes', 'active'])
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 160
+        && data.price is number && data.price > 0
+        && data.stock is int && data.stock >= 0
+        && data.sizes is list && data.sizes.size() > 0 && data.sizes.size() <= 20
+        && data.active is bool
+        && (!('discount' in data) || (data.discount is number && data.discount >= 0 && data.discount <= 100))
+        && (!('cost' in data) || data.cost == null || (data.cost is number && data.cost >= 0))
+        && (!('reservedStock' in data) || (data.reservedStock is int && data.reservedStock >= 0));
+    }
+
+    function validCustomerCreate(uid) {
+      return signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['uid', 'name', 'email', 'phone', 'address', 'createdAt', 'updatedAt'])
+        && request.resource.data.uid == uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 120
+        && request.resource.data.phone is string
+        && request.resource.data.phone.size() <= 40
+        && request.resource.data.address is map;
+    }
+
+    // Admin roles are managed in Firebase Console. Clients can inspect only
+    // their own role document; they can never grant or remove admin access.
+    match /admins/{uid} {
+      allow get: if signedIn() && request.auth.uid == uid;
+      allow list, create, update, delete: if false;
+    }
+
+    match /customers/{uid} {
+      allow read: if isAdmin() || (signedIn() && request.auth.uid == uid);
+      allow create: if validCustomerCreate(uid);
+      allow update: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'phone', 'address', 'updatedAt'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 120
+        && request.resource.data.phone is string
+        && request.resource.data.phone.size() <= 40
+        && request.resource.data.address is map;
+      allow delete: if false;
+    }
+
+    match /products/{productId} {
+      allow read: if true;
+      allow create, update: if isAdmin() && validProduct(request.resource.data);
+      allow delete: if false;
+    }
+
+    match /orders/{orderId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow create: if false;
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
+        && request.resource.data.status in ['Pendente de pagamento', 'Pagamento confirmado', 'Em preparação', 'Enviado', 'Entregue', 'Concluído', 'Cancelado'];
+      allow delete: if false;
+    }
+
+    match /coupons/{couponCode} {
+      allow read: if isAdmin();
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasOnly(['active', 'value', 'maxUses', 'uses', 'reservedUses'])
+        && request.resource.data.active is bool
+        && request.resource.data.value is number
+        && request.resource.data.value >= 1 && request.resource.data.value <= 100
+        && request.resource.data.uses == 0
+        && request.resource.data.reservedUses == 0;
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active', 'value', 'maxUses'])
+        && request.resource.data.active is bool
+        && request.resource.data.value is number
+        && request.resource.data.value >= 1 && request.resource.data.value <= 100;
+      allow delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

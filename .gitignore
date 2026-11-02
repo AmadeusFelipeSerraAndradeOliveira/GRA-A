@@ -1,0 +1,9 @@
+node_modules/
+functions/node_modules/
+.firebase/
+.codex/
+.env
+.env.*
+functions/.env*
+*.log
+npm-debug.log*
