@@ -1,13 +1,16 @@
 // Assumed data model (Firestore Standard, project graca-454ff):
 // products/{id}: name/category (bounded strings), price/discount/cost (numbers),
 //   stock/reservedStock (bounded nonnegative integers), sizes (1-20 values),
-//   active/featured (booleans), description/color/mark, imageUrl/imagePublicId,
-//   and timestamps. Published products are public; only admins write.
+//   active/featured/seededExample (booleans), description/color/mark,
+//   Cloudinary imageUrl/imagePublicId, and timestamps. Example imports stay
+//   inactive until reviewed; only admins write.
 // categories/{id}: bounded name, active flag, updatedAt. Active names are public;
 //   only admins write.
 // orders/{id}: immutable owner UID/contact/items/price/address/consent/createdAt;
 //   each request has 1-6 item maps with productId/name/size/quantity/unitPriceCents,
 //   a total in cents, delivery method, status history, stock flags, timestamps.
+//   Closing a delivered order records salesChannel, paymentMethod, saleTotalCents,
+//   installmentCount, installmentValueCents, finalInstallmentValueCents, closedAt.
 //   Owner reads own; admins read and transition; no deletes.
 // customers/{uid}: UID/email/name/phone/address/marketingConsent and timestamps.
 //   Owner reads/updates own; admins read; email, UID and createdAt are immutable.
@@ -24,7 +27,7 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return signedIn() && (
+      return signedIn() && request.auth.token.email_verified == true && (
         request.auth.token.admin == true
         || exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
@@ -37,8 +40,8 @@ service cloud.firestore {
     }
 
     function validProduct(data) {
-      return data.keys().hasAll(['name', 'category', 'price', 'stock', 'sizes', 'active', 'updatedAt'])
-        && data.keys().hasOnly(['name', 'category', 'price', 'cost', 'discount', 'stock', 'reservedStock', 'sizes', 'active', 'description', 'featured', 'imageUrl', 'imagePublicId', 'color', 'mark', 'updatedAt', 'createdAt'])
+      return data.keys().hasAll(['name', 'category', 'price', 'stock', 'sizes', 'active', 'imageUrl', 'imagePublicId', 'updatedAt'])
+        && data.keys().hasOnly(['name', 'category', 'price', 'cost', 'discount', 'stock', 'reservedStock', 'sizes', 'active', 'description', 'featured', 'imageUrl', 'imagePublicId', 'color', 'mark', 'seededExample', 'updatedAt', 'createdAt'])
         && data.name is string && data.name.size() > 0 && data.name.size() <= 160
         && data.category is string && data.category.size() > 0 && data.category.size() <= 80
         && data.price is number && data.price > 0 && data.price <= 100000
@@ -50,8 +53,11 @@ service cloud.firestore {
         && (!('cost' in data) || data.cost == null || (data.cost is number && data.cost >= 0))
         && (!('description' in data) || (data.description is string && data.description.size() <= 1200))
         && (!('featured' in data) || data.featured is bool)
-        && (!('imageUrl' in data) || (data.imageUrl is string && data.imageUrl.size() <= 2048 && (data.imageUrl == '' || data.imageUrl.matches('https://.*'))))
-        && (!('imagePublicId' in data) || (data.imagePublicId is string && data.imagePublicId.size() <= 255))
+        && data.imageUrl is string && data.imageUrl.size() <= 2048
+        && data.imageUrl.matches('https://res\\.cloudinary\\.com/[A-Za-z0-9_-]+/image/upload/.*')
+        && data.imagePublicId is string && data.imagePublicId.size() <= 255
+        && data.imagePublicId.matches('^graca/products/[A-Za-z0-9_-]{20,60}$')
+        && (!('seededExample' in data) || data.seededExample is bool)
         && (!('color' in data) || (data.color is string && data.color.size() <= 40))
         && (!('mark' in data) || (data.mark is string && data.mark.size() <= 80))
         && data.updatedAt is timestamp
@@ -178,13 +184,14 @@ service cloud.firestore {
         && data.status == 'Aguardando confirmação'
         && data.statusHistory == ['Aguardando confirmação']
         && data.stockApplied == false && data.stockRestored == false
+        && validSalesMetadata(data)
         && data.createdAt is timestamp && data.updatedAt is timestamp;
     }
 
     function validStatusHistory(history) {
-      return history is list && history.size() >= 1 && history.size() <= 6
+      return history is list && history.size() >= 1 && history.size() <= 7
         && history[0] == 'Aguardando confirmação'
-        && history.toSet().hasOnly(['Aguardando confirmação', 'Reserva confirmada', 'Em preparação', 'Disponível para retirada', 'Em rota de entrega', 'Entregue', 'Cancelado']);
+        && history.toSet().hasOnly(['Aguardando confirmação', 'Reserva confirmada', 'Em preparação', 'Disponível para retirada', 'Em rota de entrega', 'Entregue', 'Concluído', 'Cancelado']);
     }
 
     function historyPrefixUnchanged(oldHistory, newHistory) {
@@ -192,12 +199,34 @@ service cloud.firestore {
         && (oldHistory.size() < 2 || newHistory[1] == oldHistory[1])
         && (oldHistory.size() < 3 || newHistory[2] == oldHistory[2])
         && (oldHistory.size() < 4 || newHistory[3] == oldHistory[3])
-        && (oldHistory.size() < 5 || newHistory[4] == oldHistory[4]);
+        && (oldHistory.size() < 5 || newHistory[4] == oldHistory[4])
+        && (oldHistory.size() < 6 || newHistory[5] == oldHistory[5]);
+    }
+
+    function validSalesMetadata(data) {
+      return (data.status == 'Concluído'
+          && data.keys().hasAll(['salesChannel', 'paymentMethod', 'saleTotalCents', 'installmentCount', 'installmentValueCents', 'finalInstallmentValueCents', 'closedAt'])
+          && data.salesChannel in ['Loja física', 'Instagram', 'WhatsApp', 'Site', 'Outro']
+          && data.paymentMethod in ['Pix', 'Cartão de crédito à vista', 'Cartão de crédito parcelado', 'Cartão de débito', 'Dinheiro', 'Transferência']
+          && data.saleTotalCents is int && data.saleTotalCents > 0 && data.saleTotalCents <= 100000000
+          && data.installmentCount is int && data.installmentCount >= 1 && data.installmentCount <= 12
+          && data.installmentValueCents is int && data.installmentValueCents > 0
+          && data.finalInstallmentValueCents is int && data.finalInstallmentValueCents > 0
+          && data.installmentValueCents * (data.installmentCount - 1) + data.finalInstallmentValueCents == data.saleTotalCents
+          && ((data.paymentMethod == 'Cartão de crédito parcelado' && data.installmentCount >= 2)
+            || (data.paymentMethod != 'Cartão de crédito parcelado' && data.installmentCount == 1
+              && data.installmentValueCents == data.saleTotalCents))
+          && data.closedAt is timestamp && data.closedAt == request.time)
+        || (data.status != 'Concluído'
+          && !('salesChannel' in data) && !('paymentMethod' in data)
+          && !('saleTotalCents' in data) && !('installmentCount' in data)
+          && !('installmentValueCents' in data) && !('finalInstallmentValueCents' in data)
+          && !('closedAt' in data));
     }
 
     function validAdminReservation(data) {
       return data.keys().hasAll(['uid', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt', 'confirmedAt', 'cancelledAt'])
+        && data.keys().hasOnly(['uid', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt', 'confirmedAt', 'cancelledAt', 'salesChannel', 'paymentMethod', 'saleTotalCents', 'installmentCount', 'installmentValueCents', 'finalInstallmentValueCents', 'closedAt'])
         && data.uid == resource.data.uid
         && data.confirmationCode == resource.data.confirmationCode
         && data.customerName == resource.data.customerName
@@ -219,8 +248,9 @@ service cloud.firestore {
         && data.pickupDetails is string && data.pickupDetails.size() <= 160
         && data.notes is string && data.notes.size() <= 500
         && data.marketingConsent is bool
-        && data.status in ['Aguardando confirmação', 'Reserva confirmada', 'Em preparação', 'Disponível para retirada', 'Em rota de entrega', 'Entregue', 'Cancelado']
+        && data.status in ['Aguardando confirmação', 'Reserva confirmada', 'Em preparação', 'Disponível para retirada', 'Em rota de entrega', 'Entregue', 'Concluído', 'Cancelado']
         && validStatusHistory(data.statusHistory)
+        && validSalesMetadata(data)
         && data.statusHistory.size() == resource.data.statusHistory.size() + 1
         && historyPrefixUnchanged(resource.data.statusHistory, data.statusHistory)
         && data.statusHistory[data.statusHistory.size() - 1] == data.status
@@ -290,7 +320,9 @@ service cloud.firestore {
         || (resource.data.status == 'Disponível para retirada'
           && request.resource.data.status in ['Entregue', 'Cancelado'])
         || (resource.data.status == 'Em rota de entrega'
-          && request.resource.data.status in ['Entregue', 'Cancelado']);
+          && request.resource.data.status in ['Entregue', 'Cancelado'])
+        || (resource.data.status == 'Entregue'
+          && request.resource.data.status == 'Concluído');
     }
 
     function validStockTransition() {
@@ -306,7 +338,7 @@ service cloud.firestore {
           && resource.data.stockApplied == false
           && request.resource.data.stockApplied == false
           && request.resource.data.stockRestored == resource.data.stockRestored)
-        || (request.resource.data.status in ['Em preparação', 'Disponível para retirada', 'Em rota de entrega', 'Entregue']
+        || (request.resource.data.status in ['Em preparação', 'Disponível para retirada', 'Em rota de entrega', 'Entregue', 'Concluído']
           && request.resource.data.stockApplied == resource.data.stockApplied
           && request.resource.data.stockRestored == resource.data.stockRestored);
     }
@@ -353,7 +385,7 @@ service cloud.firestore {
         && validAdminReservation(request.resource.data)
         && validTransition()
         && validStockTransition()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'statusHistory', 'updatedAt', 'stockApplied', 'stockRestored', 'confirmedAt', 'cancelledAt'])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'statusHistory', 'updatedAt', 'stockApplied', 'stockRestored', 'confirmedAt', 'cancelledAt', 'salesChannel', 'paymentMethod', 'saleTotalCents', 'installmentCount', 'installmentValueCents', 'finalInstallmentValueCents', 'closedAt'])
         && request.resource.data.updatedAt is timestamp;
       allow delete: if false;
     }
