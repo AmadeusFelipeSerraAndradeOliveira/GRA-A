@@ -11,10 +11,11 @@ import {
   updateProfile
 } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-auth.js";
 import {
-  collection, doc, getDoc, getDocs, getFirestore, limit, onSnapshot, query,
+  collection, doc, getDoc, getDocs, getFirestore, limit, onSnapshot, orderBy, query,
   runTransaction, serverTimestamp, setDoc, updateDoc, where
 } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js";
 import app from "./firebase.js";
+import { exampleProductTemplates } from "./catalog-seed.js";
 
 /* GRAÇA GMC · vitrine, reservas e gestão operacional no Firebase. */
 const auth = getAuth(app);
@@ -81,7 +82,7 @@ if(!reduce&&fine){document.addEventListener('pointermove',e=>{const art=$('#hero
 window.addEventListener('hashchange',()=>{if(location.hash==='#admin')openAdmin()});
 
 // Prévia local das funcionalidades GRAÇA. Não usar para dados pessoais ou cobrança real.
-let comments=get('comments',[]), cartCoupon=get('cartCoupon',''), pendingMemberAction='', orderStatusTab='Todos', analyticsFrom='', analyticsTo='', searchEvents=get('searchEvents',[]);
+let comments=get('comments',[]), cartCoupon=get('cartCoupon',''), pendingMemberAction='', orderStatusTab='Todos', searchEvents=get('searchEvents',[]);
 const VIP_LINK='https://chat.whatsapp.com/E32OubB01g9Kqlll1paQvn';
 const htm=v=>String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const unitPrice=p=>Math.round(Number(p.price||0)*(100-Math.max(0,Math.min(100,Number(p.discount||0)))))/100;
@@ -155,6 +156,7 @@ $('#commentForm').onsubmit=e=>{e.preventDefault();if(!currentUser){pendingMember
 $('#contactForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);messages.unshift({id:uid(),name:f.get('name'),email:f.get('email'),subject:f.get('subject'),message:f.get('message'),created:new Date().toISOString(),reply:''});saveAll();e.target.reset();toast('Mensagem registrada nesta prévia.')}
 function renderAdminContent(){}
 function productEditor(id=''){
+ throw new Error('O editor seguro de produtos ainda está sendo inicializado.');
  const p=products.find(x=>String(x.id)===String(id))||{name:'',category:'Blusas',price:'',cost:'',discount:0,stock:0,sizes:['P','M','G'],color:'pink',mark:'GRAÇA',description:'',featured:false,imageUrl:''};let image=p.imageUrl||'';
  const gallery=[...new Set(['assets/graca-editorial-background.jfif',...products.map(x=>x.imageUrl).filter(Boolean)])];
  openModal('<h2 id="modalTitle">'+(id?'EDITAR PEÇA':'NOVA PEÇA')+'</h2><form id="productForm" class="modal-form"><label>NOME<input name="name" required value="'+htm(p.name)+'"></label><label>CATEGORIA<input name="category" required value="'+htm(p.category)+'"></label><label>PREÇO DE VENDA<input name="price" type="number" min="0" step=".01" required value="'+htm(p.price)+'"></label><label>CUSTO DE AQUISIÇÃO (PARA MARGEM)<input name="cost" type="number" min="0" step=".01" value="'+htm(p.cost??'')+'"></label><label>DESCONTO INDIVIDUAL (%)<input name="discount" type="number" min="0" max="100" value="'+htm(p.discount||0)+'"></label><label>ESTOQUE<input name="stock" type="number" min="0" value="'+htm(p.stock)+'"></label><label>TAMANHOS<input name="sizes" value="'+htm((p.sizes||[]).join(','))+'"></label><label>GALERIA DE MÍDIA<select id="productGallery"><option value="">Sem foto</option>'+gallery.map((x,i)=>'<option value="'+i+'">Mídia '+(i+1)+'</option>').join('')+'</select></label><label>OU ENVIAR FOTO DO COMPUTADOR<input id="photoFile" type="file" accept="image/*"></label><label>DESCRIÇÃO<textarea name="description">'+htm(p.description)+'</textarea></label><label><input type="checkbox" name="featured" '+(p.featured?'checked':'')+'> Vincular a “O seu próximo look favorito”</label><button class="pill-button dark">SALVAR</button></form>');
@@ -163,16 +165,23 @@ function productEditor(id=''){
  $('#productForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target),item={...p,id:id||uid(),name:f.get('name'),category:f.get('category'),price:+f.get('price'),cost:f.get('cost')===''?null:+f.get('cost'),discount:+f.get('discount'),stock:+f.get('stock'),sizes:f.get('sizes').split(',').map(x=>x.trim()),description:f.get('description'),featured:f.get('featured')==='on',imageUrl:image};if(id)products=products.map(x=>String(x.id)===String(id)?item:x);else products.push(item);saveAll();closeModal();renderAdminContent();renderProducts()};
 }
 $('#accountBtn').onclick=()=>currentUser?clientMenu():accountModal('login');$('#clientMenuBtn').onclick=clientMenu;$('#vipJoinBtn').onclick=vipForm;
-renderProducts();renderCart();renderComments();memberNav();
+renderComments();
 // Fluxo de reserva e painel compartilhado no Firestore. O checkout antigo de
 // pagamento é deliberadamente substituído nesta fase.
 const migrationCandidates = get('products', []);
 const reservationStatuses = ['Aguardando confirmação','Reserva confirmada','Em preparação','Disponível para retirada','Em rota de entrega','Entregue','Cancelado'];
+const salesChannels = ['Loja física','Instagram','WhatsApp','Site','Outro'];
+const paymentMethods = ['Pix','Cartão de crédito à vista','Cartão de crédito parcelado','Cartão de débito','Dinheiro','Transferência'];
+const currentDay = new Date();
+const firstDayOfMonth = new Date(currentDay.getFullYear(), currentDay.getMonth(), 1);
+let analyticsFrom = firstDayOfMonth.toLocaleDateString('sv-SE');
+let analyticsTo = currentDay.toLocaleDateString('sv-SE');
 let categoriesFromFirestore = [];
 let catalogLoaded = false;
 let productUnsubscribe = null, categoryUnsubscribe = null, orderUnsubscribe = null, customerUnsubscribe = null, messageUnsubscribe = null;
 let cloudinaryWorkerUrl = '';
 let savingReservation = false;
+let importingExamples = false;
 products = [];
 orders = [];
 customers = [];
@@ -180,7 +189,9 @@ discounts = [];
 
 const safeDate = value => value?.toDate ? value.toDate() : new Date(value || Date.now());
 const productCents = p => Math.round(Number(p.price || 0) * (100 - Math.max(0, Math.min(100, Number(p.discount || 0)))));
-const displayTotal = order => Number.isFinite(Number(order.totalCents)) ? Number(order.totalCents) / 100 : Number(order.total || 0);
+const displayTotal = order => order?.status==='Concluído'&&Number.isFinite(Number(order.saleTotalCents))?Number(order.saleTotalCents)/100:Number.isFinite(Number(order.totalCents))?Number(order.totalCents)/100:Number(order.total||0);
+const isCloudinaryUrl = value => typeof value === 'string' && /^https:\/\/res\.cloudinary\.com\/[a-z0-9_-]+\/image\/upload\//i.test(value);
+const isCloudinaryPublicId = value => typeof value === 'string' && /^graca\/products\/[a-z0-9_-]{20,60}$/i.test(value);
 const normalizeOrder = (id,data) => ({
   ...data, id, customerName:data.customerName||data.name||'—', phone:data.phone||'',
   totalCents:Number.isFinite(Number(data.totalCents))?Number(data.totalCents):Math.round(Number(data.total||0)*100),
@@ -230,7 +241,7 @@ function subscribeUserData(user) {
   messages = [];
   if (!user) return;
   const orderQuery = isAdmin
-    ? query(collection(db, 'orders'), limit(250))
+    ? query(collection(db, 'orders'), orderBy('createdAt','desc'), limit(250))
     : query(collection(db, 'orders'), where('uid', '==', user.uid), limit(100));
   orderUnsubscribe = onSnapshot(orderQuery, snapshot => {
     orders = snapshot.docs.map(item => normalizeOrder(item.id,item.data())).sort((a,b) => safeDate(b.createdAt) - safeDate(a.createdAt));
@@ -279,7 +290,7 @@ renderProducts = function() {
   if (sort === 'price-desc') list.sort((a,b) => productCents(b)-productCents(a));
   if (sort === 'name') list.sort((a,b) => String(a.name).localeCompare(String(b.name),'pt-BR'));
   if (sort === 'featured') list.sort((a,b) => Number(b.featured)-Number(a.featured));
-  const card = (p,i) => `<article class="product-card" data-product="${htm(p.id)}"><div class="product-visual ${htm(p.color||'pink')}${p.imageUrl?' has-photo':''}" data-mark="${htm(p.mark||'GRAÇA')}">${p.imageUrl?`<img class="product-photo" src="${htm(p.imageUrl)}" alt="${htm(p.name)}" loading="lazy">`:''}<span class="product-index">GMC / ${String(i+1).padStart(2,'0')}</span><button class="quick-add" data-add="${htm(p.id)}" aria-label="Escolher ${htm(p.name)}">+</button></div><div class="product-info"><div><h4>${htm(p.name)}</h4><p>${htm(String(p.category||'').toUpperCase())}</p></div><span class="product-price">${Number(p.discount||0)?`<del>${money(Number(p.price))}</del> `:''}<b>${money(productCents(p)/100)}</b></span></div></article>`;
+  const card = (p,i) => {const photo=isCloudinaryUrl(p.imageUrl)?p.imageUrl:'';return `<article class="product-card" data-product="${htm(p.id)}"><div class="product-visual ${htm(p.color||'pink')}${photo?' has-photo':''}" data-mark="${htm(p.mark||'GRAÇA')}">${photo?`<img class="product-photo" src="${htm(photo)}" alt="${htm(p.name)}" loading="lazy">`:''}<span class="product-index">GMC / ${String(i+1).padStart(2,'0')}</span><button class="quick-add" data-add="${htm(p.id)}" aria-label="Escolher ${htm(p.name)}">+</button></div><div class="product-info"><div><h4>${htm(p.name)}</h4><p>${htm(String(p.category||'').toUpperCase())}</p></div><span class="product-price">${Number(p.discount||0)?`<del>${money(Number(p.price))}</del> `:''}<b>${money(productCents(p)/100)}</b></span></div></article>`;};
   const empty = catalogLoaded ? '<div class="empty-state">O CATÁLOGO ESTÁ SENDO PREPARADO PELA GRAÇA.</div>' : '<div class="empty-state">CARREGANDO A COLEÇÃO…</div>';
   $('#productGrid').innerHTML = list.length ? list.map(card).join('') : empty;
   const categoriesList = ['Todas', ...new Set([...categoriesFromFirestore, ...activeProducts().map(p => p.category).filter(Boolean)])];
@@ -294,7 +305,8 @@ openProduct = function(id) {
   const p = products.find(item => String(item.id) === String(id) && item.active !== false);
   if (!p) return toast('Este produto não está disponível.');
   selectedSize = p.sizes?.[0] || 'Único';
-  openModal(`<div class="product-detail"><div class="detail-art ${htm(p.color||'pink')}">${p.imageUrl?`<img class="detail-photo" src="${htm(p.imageUrl)}" alt="${htm(p.name)}">`:htm(p.mark||'GRAÇA')}</div><div><div class="section-kicker">GRAÇA / PEÇA</div><h2 id="modalTitle">${htm(p.name)}</h2><strong>${money(productCents(p)/100)}</strong><p>${htm(p.description||'')}</p><p class="fine-print">ESTOQUE INFORMADO: ${Number(p.stock||0)} UNIDADES · DISPONIBILIDADE SERÁ CONFIRMADA PELA LOJA</p><label class="fine-print" for="sizeChoice">ESCOLHA UMA VARIAÇÃO</label><div class="size-options" id="sizeChoice">${(p.sizes?.length?p.sizes:['Único']).map(size=>`<button type="button" data-size="${htm(size)}" class="${size===selectedSize?'selected':''}">${htm(size)}</button>`).join('')}</div><button class="pill-button dark" id="detailAdd" ${Number(p.stock||0)<1?'disabled':''}>ADICIONAR AO CARRINHO ↗</button></div></div>`);
+  const photo=isCloudinaryUrl(p.imageUrl)?p.imageUrl:'';
+  openModal(`<div class="product-detail"><div class="detail-art ${htm(p.color||'pink')}">${photo?`<img class="detail-photo" src="${htm(photo)}" alt="${htm(p.name)}">`:htm(p.mark||'GRAÇA')}</div><div><div class="section-kicker">GRAÇA / PEÇA</div><h2 id="modalTitle">${htm(p.name)}</h2><strong>${money(productCents(p)/100)}</strong><p>${htm(p.description||'')}</p><p class="fine-print">ESTOQUE INFORMADO: ${Number(p.stock||0)} UNIDADES · DISPONIBILIDADE SERÁ CONFIRMADA PELA LOJA</p><label class="fine-print" for="sizeChoice">ESCOLHA UMA VARIAÇÃO</label><div class="size-options" id="sizeChoice">${(p.sizes?.length?p.sizes:['Único']).map(size=>`<button type="button" data-size="${htm(size)}" class="${size===selectedSize?'selected':''}">${htm(size)}</button>`).join('')}</div><button class="pill-button dark" id="detailAdd" ${Number(p.stock||0)<1?'disabled':''}>ADICIONAR AO CARRINHO ↗</button></div></div>`);
   $$('[data-size]').forEach(button => button.onclick = () => { selectedSize=button.dataset.size; $$('[data-size]').forEach(item=>item.classList.toggle('selected',item===button)); });
   $('#detailAdd').onclick = () => { addToCart(p.id,selectedSize); closeModal(); openCart(); };
 };
@@ -311,7 +323,7 @@ renderCart = function() {
   $('#cartCount').textContent = cart.reduce((sum,item)=>sum+Number(item.qty||0),0);
   $('#cartItems').innerHTML = cart.length ? cart.map((item,index) => {
     const p=products.find(product=>String(product.id)===String(item.id));
-    return `<div class="cart-line"><div class="cart-thumb">${p?.imageUrl?`<img src="${htm(p.imageUrl)}" alt="">`:htm(p?.mark||'✳')}</div><div><h4>${htm(p?.name||'Produto indisponível')}</h4><small>${htm(item.size)} · ${p?money(productCents(p)/100):'Atualize a coleção'}</small><div class="qty-controls"><button data-q="${index}" data-delta="-1" aria-label="Diminuir quantidade">−</button>${Number(item.qty)}<button data-q="${index}" data-delta="1" aria-label="Aumentar quantidade">+</button></div></div><button data-rm="${index}" aria-label="Remover item">×</button></div>`;
+    return `<div class="cart-line"><div class="cart-thumb">${isCloudinaryUrl(p?.imageUrl)?`<img src="${htm(p.imageUrl)}" alt="">`:htm(p?.mark||'✳')}</div><div><h4>${htm(p?.name||'Produto indisponível')}</h4><small>${htm(item.size)} · ${p?money(productCents(p)/100):'Atualize a coleção'}</small><div class="qty-controls"><button data-q="${index}" data-delta="-1" aria-label="Diminuir quantidade">−</button>${Number(item.qty)}<button data-q="${index}" data-delta="1" aria-label="Aumentar quantidade">+</button></div></div><button data-rm="${index}" aria-label="Remover item">×</button></div>`;
   }).join('') : '<div class="empty-state">SEU CARRINHO ESTÁ VAZIO.</div>';
   const validCart = cart.every(item=>products.some(p=>String(p.id)===String(item.id)&&p.active!==false));
   const total = cart.reduce((sum,item)=>{const p=products.find(product=>String(product.id)===String(item.id));return sum+(p?productCents(p)*Number(item.qty||0):0);},0);
@@ -423,10 +435,10 @@ function whatsappLink(order) {
 
 function renderAdminOrders() {
   const pending=orders.filter(order=>order.status==='Aguardando confirmação').length;
-  const list=orders;
-  const rows=list.map(order=>`<tr><td><button class="mini-button" data-order-details="${htm(order.id)}">${htm(order.confirmationCode||order.id)}</button></td><td>${htm(order.customerName)}</td><td>${safeDate(order.createdAt).toLocaleString('pt-BR')}</td><td>${money(displayTotal(order))}</td><td><span class="status ${order.status==='Aguardando confirmação'?'pending':''}">${htm(order.status)}</span></td><td>${whatsappLink(order)}</td><td><select data-order-status="${htm(order.id)}"><option value="">Atualizar…</option>${reservationStatuses.filter(status=>status!==order.status&&allowedNextStatus(order,status)).map(status=>`<option value="${htm(status)}">${htm(status)}</option>`).join('')}</select></td></tr>`).join('');
-  $('#adminContent').innerHTML=`<div class="section-kicker">RESERVAS / TEMPO REAL</div><h2>PEDIDOS</h2><div class="admin-cards"><div class="metric"><span>AGUARDANDO CONFIRMAÇÃO</span><strong>${pending}</strong></div><div class="metric"><span>SOLICITAÇÕES CARREGADAS</span><strong>${orders.length}</strong></div></div>${rows?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>CÓDIGO</th><th>CLIENTE</th><th>DATA</th><th>ESTIMATIVA</th><th>STATUS</th><th>WHATSAPP</th><th>ATUALIZAR</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty-state">NENHUMA SOLICITAÇÃO RECEBIDA.</div>'}<p class="fine-print">Solicitações não reduzem estoque enquanto aguardam. A confirmação valida e atualiza o estoque em uma transação.</p>`;
+  const rows=orders.map(order=>`<tr><td><button class="mini-button" data-order-details="${htm(order.id)}">${htm(order.confirmationCode||order.id)}</button></td><td>${htm(order.customerName)}</td><td>${safeDate(order.createdAt).toLocaleString('pt-BR')}</td><td>${money(order.status==='Concluído'?Number(order.saleTotalCents)/100:displayTotal(order))}</td><td><span class="status ${order.status==='Aguardando confirmação'?'pending':''}">${htm(order.status)}</span></td><td>${whatsappLink(order)}</td><td>${order.status==='Entregue'?`<button class="mini-button primary" data-close-order="${htm(order.id)}">ENCERRAR VENDA</button>`:order.status==='Concluído'?'<span class="fine-print">VENDA REGISTRADA</span>':`<select data-order-status="${htm(order.id)}"><option value="">Atualizar…</option>${reservationStatuses.filter(status=>status!==order.status&&allowedNextStatus(order,status)).map(status=>`<option value="${htm(status)}">${htm(status)}</option>`).join('')}</select>`}</td></tr>`).join('');
+  $('#adminContent').innerHTML=`<div class="section-kicker">RESERVAS / TEMPO REAL</div><h2>PEDIDOS</h2><div class="admin-cards"><div class="metric"><span>AGUARDANDO CONFIRMAÇÃO</span><strong>${pending}</strong></div><div class="metric"><span>SOLICITAÇÕES CARREGADAS</span><strong>${orders.length}</strong></div><div class="metric"><span>VENDAS ENCERRADAS</span><strong>${orders.filter(order=>order.status==='Concluído').length}</strong></div></div>${rows?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>CÓDIGO</th><th>CLIENTE</th><th>DATA</th><th>VALOR</th><th>STATUS</th><th>WHATSAPP</th><th>AÇÃO</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty-state">NENHUMA SOLICITAÇÃO RECEBIDA.</div>'}<p class="fine-print">Solicitações pendentes não reduzem estoque. A confirmação valida e atualiza o estoque em uma transação. Uma venda só pode ser encerrada depois de marcada como entregue; o encerramento pede canal e forma de pagamento.</p>`;
   $$('[data-order-details]').forEach(button=>button.onclick=()=>showOrderDetails(orders.find(order=>order.id===button.dataset.orderDetails)));
+  $$('[data-close-order]').forEach(button=>button.onclick=()=>closeOrderDialog(button.dataset.closeOrder));
   $$('[data-order-status]').forEach(select=>select.onchange=async()=>{if(!select.value)return;select.disabled=true;try{await changeReservationStatus(select.dataset.orderStatus,select.value);toast('Status atualizado.');}catch(error){console.error(error);toast(friendlyFirestoreError(error));select.disabled=false;}});
 }
 
@@ -445,7 +457,37 @@ function showOrderDetails(order) {
   if(!order)return;
   const lines=(order.items||[]).map(item=>{const quantity=Number(item.quantity??item.qty??0),priceCents=Number(item.unitPriceCents??Math.round(Number(item.unitPrice||0)*100));return `<li>${htm(item.name||item.productName||item.productId||item.id)} · ${htm(item.size)} · ${quantity} un. · ${money(priceCents*quantity/100)}</li>`;}).join('');
   const addr=order.deliveryMethod==='Entrega'?order.address:{};
-  openModal(`<div class="section-kicker">${htm(order.confirmationCode||order.id)}</div><h2 id="modalTitle">DETALHES DA SOLICITAÇÃO.</h2><p><strong>${htm(order.customerName)}</strong><br>${htm(order.phone)} · ${whatsappLink(order)}</p><p>${htm(order.status||'Registro legado')} · ${safeDate(order.createdAt).toLocaleString('pt-BR')}</p><ul class="order-detail-items">${lines}</ul><p><strong>Valor estimado ou registrado:</strong> ${money(displayTotal(order))}<br><strong>Modalidade:</strong> ${htm(order.deliveryMethod||order.delivery||'Não registrada')}</p>${order.deliveryMethod==='Entrega'?`<p>${htm(addr.street)}, ${htm(addr.number)} · ${htm(addr.district)}<br>${htm(addr.city)} / ${htm(addr.state)} · ${htm(addr.zip)}</p>`:''}${order.pickupDetails?`<p><strong>Retirada:</strong> ${htm(order.pickupDetails)}</p>`:''}${order.notes?`<p><strong>Observações:</strong> ${htm(order.notes)}</p>`:''}<p class="fine-print">Consentimento para novidades: ${order.marketingConsent?'sim':'não'}.</p><h3>HISTÓRICO</h3><ol>${(order.statusHistory||[order.status||'Registro anterior']).map(status=>`<li>${htm(status)}</li>`).join('')}</ol>`);
+  const saleDetails=order.status==='Concluído'?`<p class="sale-record"><strong>Venda encerrada:</strong> ${money(Number(order.saleTotalCents)/100)}<br><strong>Canal:</strong> ${htm(order.salesChannel)} · <strong>Pagamento:</strong> ${htm(order.paymentMethod)}<br>${Number(order.installmentCount)>1?`${Number(order.installmentCount)} parcelas: ${money(Number(order.installmentValueCents)/100)} × ${Number(order.installmentCount)-1} + parcela final de ${money(Number(order.finalInstallmentValueCents)/100)}`:'Pagamento em parcela única'}<br><strong>Encerrado em:</strong> ${safeDate(order.closedAt).toLocaleString('pt-BR')}</p>`:'';
+  openModal(`<div class="section-kicker">${htm(order.confirmationCode||order.id)}</div><h2 id="modalTitle">DETALHES DA SOLICITAÇÃO.</h2><p><strong>${htm(order.customerName)}</strong><br>${htm(order.phone)} · ${whatsappLink(order)}</p><p>${htm(order.status||'Registro legado')} · ${safeDate(order.createdAt).toLocaleString('pt-BR')}</p><ul class="order-detail-items">${lines}</ul><p><strong>Valor estimado ou registrado:</strong> ${money(displayTotal(order))}<br><strong>Modalidade:</strong> ${htm(order.deliveryMethod||order.delivery||'Não registrada')}</p>${order.deliveryMethod==='Entrega'?`<p>${htm(addr.street)}, ${htm(addr.number)} · ${htm(addr.district)}<br>${htm(addr.city)} / ${htm(addr.state)} · ${htm(addr.zip)}</p>`:''}${order.pickupDetails?`<p><strong>Retirada:</strong> ${htm(order.pickupDetails)}</p>`:''}${order.notes?`<p><strong>Observações:</strong> ${htm(order.notes)}</p>`:''}${saleDetails}<p class="fine-print">Consentimento para novidades: ${order.marketingConsent?'sim':'não'}.</p><h3>HISTÓRICO</h3><ol>${(order.statusHistory||[order.status||'Registro anterior']).map(status=>`<li>${htm(status)}</li>`).join('')}</ol>`);
+}
+
+function closeOrderDialog(orderId) {
+  const order=orders.find(item=>item.id===orderId);
+  if(!order||order.status!=='Entregue')return toast('Só é possível encerrar uma venda depois da entrega.');
+  const total=(displayTotal(order)).toFixed(2);
+  openModal(`<div class="section-kicker">VENDA / ${htm(order.confirmationCode||order.id)}</div><h2 id="modalTitle">ENCERRAR ATENDIMENTO.</h2><p>Informe onde a venda foi realizada e a forma de pagamento. O valor final pode ser ajustado antes de salvar.</p><form id="saleClosureForm" class="modal-form"><label>CANAL DA VENDA<select name="salesChannel" required>${salesChannels.map(channel=>`<option value="${htm(channel)}">${htm(channel)}</option>`).join('')}</select></label><label>FORMA DE PAGAMENTO<select name="paymentMethod" required>${paymentMethods.map(method=>`<option value="${htm(method)}">${htm(method)}</option>`).join('')}</select></label><label>VALOR FINAL DA VENDA (R$)<input name="saleTotal" type="number" min="0.01" max="1000000" step="0.01" value="${htm(total)}" required></label><div id="installmentFields" hidden><label>QUANTIDADE DE PARCELAS<select name="installmentCount">${Array.from({length:11},(_,index)=>index+2).map(count=>`<option value="${count}">${count} parcelas</option>`).join('')}</select></label><p id="installmentPreview" class="installment-preview" aria-live="polite"></p></div><p class="fine-print">O encerramento registra um histórico permanente da venda; pedidos não são apagados.</p><button class="pill-button dark" id="confirmSaleClosure">REGISTRAR VENDA CONCLUÍDA ↗</button></form>`);
+  const form=$('#saleClosureForm'),method=form.elements.paymentMethod,count=form.elements.installmentCount,amount=form.elements.saleTotal,fields=$('#installmentFields'),preview=$('#installmentPreview');
+  const syncInstallments=()=>{const parcelado=method.value==='Cartão de crédito parcelado';fields.hidden=!parcelado;if(!parcelado)return;const cents=Math.max(0,Math.round(Number(amount.value||0)*100)),parts=Number(count.value||2),each=Math.floor(cents/parts),last=cents-each*(parts-1);preview.textContent=`${parts-1} parcela(s) de ${money(each/100)} e a última de ${money(last/100)} · total ${money(cents/100)}`;};
+  method.onchange=syncInstallments;count.onchange=syncInstallments;amount.oninput=syncInstallments;syncInstallments();
+  form.onsubmit=async event=>{event.preventDefault();const cents=Math.round(Number(amount.value)*100),installments=method.value==='Cartão de crédito parcelado'?Number(count.value):1;if(!Number.isInteger(cents)||cents<1||cents>100000000||installments<1||installments>12)return toast('Confira o valor final e a quantidade de parcelas.');const button=$('#confirmSaleClosure');button.disabled=true;button.textContent='REGISTRANDO…';try{await finalizeReservationSale(orderId,{salesChannel:String(form.elements.salesChannel.value),paymentMethod:String(method.value),saleTotalCents:cents,installmentCount:installments});closeModal();toast('Venda registrada e atendimento encerrado.');}catch(error){console.error(error);toast(friendlyFirestoreError(error));button.disabled=false;button.textContent='REGISTRAR VENDA CONCLUÍDA ↗';}};
+}
+
+async function finalizeReservationSale(orderId,sale) {
+  const orderRef=doc(db,'orders',orderId);
+  await runTransaction(db,async transaction=>{
+    const snapshot=await transaction.get(orderRef);
+    if(!snapshot.exists())throw new Error('Pedido não encontrado.');
+    const order=snapshot.data();
+    if(order.status!=='Entregue'||order.salesChannel||order.closedAt)throw new Error('O pedido precisa estar entregue e ainda não encerrado.');
+    if(!salesChannels.includes(sale.salesChannel)||!paymentMethods.includes(sale.paymentMethod))throw new Error('Selecione um canal e uma forma de pagamento válidos.');
+    const installmentValueCents=Math.floor(sale.saleTotalCents/sale.installmentCount);
+    const finalInstallmentValueCents=sale.saleTotalCents-installmentValueCents*(sale.installmentCount-1);
+    transaction.update(orderRef,{
+      ...sale,installmentValueCents,finalInstallmentValueCents,
+      status:'Concluído',statusHistory:[...(order.statusHistory||[]),'Concluído'],
+      closedAt:serverTimestamp(),updatedAt:serverTimestamp()
+    });
+  });
 }
 
 async function changeReservationStatus(orderId,nextStatus) {
@@ -479,17 +521,74 @@ async function changeReservationStatus(orderId,nextStatus) {
 }
 
 function renderAdminProducts() {
-  const rows=products.map(product=>`<tr><td>${product.imageUrl?`<img class="admin-product-photo" src="${htm(product.imageUrl)}" alt="${htm(product.name)}">`:''}${htm(product.name)}</td><td>${htm(product.category||'')}</td><td>${money(productCents(product)/100)}</td><td>${Number(product.stock||0)}</td><td>${product.active===false?'OCULTO':'ATIVO'}</td><td><button class="mini-button" data-product-edit="${htm(product.id)}">EDITAR</button></td></tr>`).join('');
-  $('#adminContent').innerHTML=`<div class="section-kicker">CATÁLOGO / FIRESTORE</div><h2>PRODUTOS</h2><div class="admin-toolbar"><span>${products.length} produtos no Firestore</span><div><button id="cloudinarySetup" class="mini-button">CONFIGURAR UPLOAD</button> <button id="newProduct" class="mini-button primary">+ NOVO PRODUTO</button></div></div><p class="fine-print">O catálogo e o estoque são compartilhados no Firestore. Produtos e pedidos nunca são apagados por este painel.</p>${migrationCandidates.length?'<button id="importLegacyProducts" class="mini-button">IMPORTAR CATÁLOGO DESTE NAVEGADOR</button>':''}${rows?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>PRODUTO</th><th>CATEGORIA</th><th>PREÇO</th><th>ESTOQUE</th><th>STATUS</th><th>AÇÃO</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty-state">NENHUM PRODUTO CADASTRADO NO FIRESTORE.</div>'}<div id="cloudinaryEndpointStatus" class="fine-print"></div>`;
+  const transferableLegacyProducts=migrationCandidates.filter(product=>isCloudinaryUrl(product.imageUrl)&&isCloudinaryPublicId(product.imagePublicId));
+  const rows=products.map(product=>`<tr><td>${isCloudinaryUrl(product.imageUrl)?`<img class="admin-product-photo" src="${htm(product.imageUrl)}" alt="${htm(product.name)}">`:''}${htm(product.name)}</td><td>${htm(product.category||'')}</td><td>${money(productCents(product)/100)}</td><td>${Number(product.stock||0)}</td><td>${product.seededExample?'EXEMPLO · REVISAR':product.active===false?'RASCUNHO':'ATIVO'}</td><td><button class="mini-button" data-product-edit="${htm(product.id)}">EDITAR</button></td></tr>`).join('');
+  $('#adminContent').innerHTML=`<div class="section-kicker">CATÁLOGO / FIRESTORE</div><h2>PRODUTOS</h2><div class="admin-toolbar"><span>${products.length} produtos no Firestore</span><div><button id="cloudinarySetup" class="mini-button">CONFIGURAR UPLOAD</button> <button id="newProduct" class="mini-button primary">+ NOVO PRODUTO</button></div></div><p class="fine-print">Cada produto precisa de uma foto segura enviada ao Cloudinary. Os dados e as imagens de exemplo são rascunhos; revise o estoque e os preços antes de publicar. Produtos e pedidos não podem ser apagados pelo painel.</p><div class="admin-toolbar"><button id="importExampleProducts" class="mini-button">IMPORTAR FOTOS DA PASTA</button><input id="exampleProductFolder" type="file" accept="image/jpeg,image/png,image/webp" webkitdirectory directory multiple hidden></div>${transferableLegacyProducts.length?'<button id="importLegacyProducts" class="mini-button">IMPORTAR CATÁLOGO DESTE NAVEGADOR</button>':''}${rows?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>PRODUTO</th><th>CATEGORIA</th><th>PREÇO</th><th>ESTOQUE</th><th>STATUS</th><th>AÇÃO</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty-state">NENHUM PRODUTO CADASTRADO NO FIRESTORE.</div>'}<div id="cloudinaryEndpointStatus" class="fine-print"></div>`;
   $('#newProduct').onclick=()=>productEditor();
   $('#cloudinarySetup').onclick=configureCloudinaryWorker;
+  $('#importExampleProducts').onclick=()=>$('#exampleProductFolder').click();
+  $('#exampleProductFolder').onchange=async event=>{const files=[...(event.currentTarget.files||[])];event.currentTarget.value='';await importExampleProducts(files);};
   $$('[data-product-edit]').forEach(button=>button.onclick=()=>productEditor(button.dataset.productEdit));
   $('#importLegacyProducts')?.addEventListener('click',async()=>{
-    const names=migrationCandidates.map(product=>product.name).join('\n');
-    if(!confirm(`Importar ${migrationCandidates.length} produtos que estão salvos somente neste navegador?\n\n${names}\n\nEles ficarão visíveis na loja. Produtos já existentes com o mesmo ID não serão substituídos.`))return;
-    try{for(const source of migrationCandidates){const id=String(source.id);const existing=await getDoc(doc(db,'products',id));if(existing.exists())continue;const {id:_localId,...fields}=source;await setDoc(doc(db,'products',id),{...fields,active:true,stock:Number(source.stock||0),sizes:source.sizes?.length?source.sizes:['Único'],updatedAt:serverTimestamp()});await saveCategory(source.category);}toast('Catálogo local importado sem substituir itens existentes.');}
+    const names=transferableLegacyProducts.map(product=>product.name).join('\n');
+    if(!confirm(`Importar ${transferableLegacyProducts.length} produto(s) com foto já enviada ao Cloudinary?\n\n${names}\n\nOs produtos serão criados como rascunhos ocultos. Itens já existentes com o mesmo ID não serão substituídos.`))return;
+    try{for(const source of transferableLegacyProducts){const id=String(source.id);const existing=await getDoc(doc(db,'products',id));if(existing.exists())continue;const {id:_localId,createdAt:_oldCreatedAt,...fields}=source;await setDoc(doc(db,'products',id),{...fields,active:false,stock:Number(source.stock||0),sizes:source.sizes?.length?source.sizes:['Único'],createdAt:serverTimestamp(),updatedAt:serverTimestamp()});await saveCategory(source.category);}toast('Catálogo compatível importado como rascunho, sem substituir produtos existentes.');}
     catch(error){console.error(error);toast(friendlyFirestoreError(error));}
   });
+}
+
+async function uploadProductPhoto(file) {
+  if(!isAdmin||!auth.currentUser?.emailVerified)throw new Error('Entre em uma conta de administrador com e-mail confirmado.');
+  if(!cloudinaryWorkerUrl){const setting=await getDoc(doc(db,'settings','cloudinary'));cloudinaryWorkerUrl=setting.exists()?setting.data().workerUrl||'':'';}
+  if(!cloudinaryWorkerUrl)throw new Error('Configure primeiro o endereço do Worker de upload.');
+  if(!(file instanceof File)||!['image/jpeg','image/png','image/webp'].includes(file.type)||file.size<1||file.size>5*1024*1024)throw new Error('Use uma foto JPEG, PNG ou WebP de até 5 MB.');
+  const token=await auth.currentUser.getIdToken();
+  const body=new FormData();body.append('file',file);
+  const response=await fetch(cloudinaryWorkerUrl,{method:'POST',headers:{Authorization:`Bearer ${token}`},body});
+  let result={};try{result=await response.json();}catch{}
+  if(!response.ok)throw new Error(result.error||'O Worker recusou o envio.');
+  if(!isCloudinaryUrl(result.secure_url)||!isCloudinaryPublicId(result.public_id))throw new Error('O Cloudinary não retornou uma URL segura e um identificador válidos.');
+  return {imageUrl:result.secure_url,imagePublicId:result.public_id};
+}
+
+async function importExampleProducts(files) {
+  if(!isAdmin)return toast('Somente uma conta autorizada pode importar produtos.');
+  if(importingExamples)return toast('Uma importação já está em andamento.');
+  const fileByName=new Map(files.map(file=>[file.name,file]));
+  const missing=exampleProductTemplates.filter(item=>!fileByName.has(item.filename));
+  const existing=[];
+  for(const item of exampleProductTemplates){const snapshot=await getDoc(doc(db,'products',item.id));if(snapshot.exists())existing.push(item.name);}
+  const toImport=exampleProductTemplates.filter(item=>fileByName.has(item.filename)&&!existing.includes(item.name));
+  if(missing.length)toast(`A pasta não trouxe ${missing.length} foto(s) esperada(s); vou considerar somente as fotos de produto reconhecidas.`);
+  if(!toImport.length)return toast(existing.length?'Os produtos de exemplo já existem.':'Nenhuma foto de produto reconhecida na pasta selecionada.');
+  const preview=toImport.map(item=>`• ${item.name}`).join('\n');
+  if(!confirm(`Importar ${toImport.length} produto(s) como rascunho?\n\n${preview}\n\nAs imagens serão enviadas ao Cloudinary. Preços estimados aleatórios e estoque de 5 a 50 unidades serão gerados. Os itens ficarão ocultos até você revisar e publicar. Artes da marca e campanha serão ignoradas.`))return;
+  if(importingExamples)return toast('Uma importação já está em andamento.');
+  let created=0;importingExamples=true;
+  try{
+    for(const item of toImport){
+      const file=fileByName.get(item.filename);
+      const image=await uploadProductPhoto(file);
+      const steps=Math.floor((item.priceMaxCents-item.priceMinCents)/500);
+      const priceCents=item.priceMinCents+Math.floor(Math.random()*(steps+1))*500;
+      const stock=Math.floor(Math.random()*46)+5;
+      const product={
+        name:item.name,category:item.category,price:priceCents/100,cost:null,discount:0,stock,
+        sizes:item.sizes,active:false,featured:false,description:item.description,
+        imageUrl:image.imageUrl,imagePublicId:image.imagePublicId,color:item.color,mark:item.mark,
+        seededExample:true,createdAt:serverTimestamp(),updatedAt:serverTimestamp()
+      };
+      const ref=doc(db,'products',item.id);
+      const didCreate=await runTransaction(db,async transaction=>{const snapshot=await transaction.get(ref);if(snapshot.exists())return false;transaction.set(ref,product);return true;});
+      if(!didCreate)continue;
+      await saveCategory(item.category);
+      created++;
+    }
+    toast(`${created} produto(s) de exemplo importado(s) como rascunho. Revise preço e estoque antes de publicar.`);
+  }catch(error){
+    console.error('Falha na importação de exemplos:',error);
+    toast(`${created} rascunho(s) importado(s). Falha no próximo envio: ${error.message||'verifique o Worker Cloudinary'}`);
+  }finally{importingExamples=false;}
 }
 
 function renderAdminMessages() {
@@ -518,23 +617,24 @@ async function configureCloudinaryWorker() {
 productEditor = async function(id='') {
   const existing=products.find(item=>String(item.id)===String(id));
   const p=existing||{name:'',category:'',price:'',cost:'',discount:0,stock:0,sizes:['Único'],color:'pink',mark:'GRAÇA',description:'',featured:false,active:true,imageUrl:'',imagePublicId:''};
-  let imageUrl=p.imageUrl||'', imagePublicId=p.imagePublicId||'', previewUrl='';
+  let imageUrl=isCloudinaryUrl(p.imageUrl)?p.imageUrl:'', imagePublicId=isCloudinaryPublicId(p.imagePublicId)?p.imagePublicId:'', previewUrl='';
   const setting=await getDoc(doc(db,'settings','cloudinary')).catch(()=>null);
   cloudinaryWorkerUrl=setting?.exists()?setting.data().workerUrl||'':'';
-  openModal(`<div class="section-kicker">CATÁLOGO / ${id?'EDITAR':'NOVO'}</div><h2 id="modalTitle">${id?'EDITAR PRODUTO':'CADASTRAR PRODUTO'}.</h2><form id="productForm" class="modal-form"><label>NOME<input name="name" maxlength="160" required value="${htm(p.name)}"></label><label>CATEGORIA<input name="category" maxlength="80" required value="${htm(p.category)}"></label><div class="modal-grid"><label>PREÇO<input name="price" type="number" min="0.01" max="100000" step=".01" required value="${htm(p.price)}"></label><label>CUSTO (OPCIONAL)<input name="cost" type="number" min="0" step=".01" value="${htm(p.cost??'')}"></label></div><div class="modal-grid"><label>DESCONTO (%)<input name="discount" type="number" min="0" max="100" value="${htm(p.discount||0)}"></label><label>ESTOQUE<input name="stock" type="number" min="0" max="100000" step="1" required value="${htm(p.stock||0)}"></label></div><label>TAMANHOS / VARIAÇÕES (SEPARADOS POR VÍRGULA)<input name="sizes" required value="${htm((p.sizes||[]).join(', '))}"></label><label>DESCRIÇÃO<textarea name="description" maxlength="1200">${htm(p.description||'')}</textarea></label><label><input name="featured" type="checkbox" ${p.featured?'checked':''}> Exibir na curadoria em destaque</label><label><input name="active" type="checkbox" ${p.active!==false?'checked':''}> Publicado no catálogo</label><div class="upload-preview">${imageUrl?`<img id="productPhotoPreview" src="${htm(imageUrl)}" alt="Prévia da foto">`:'<div id="productPhotoPreview" class="empty-state">SEM FOTO</div>'}</div><label>ESCOLHER FOTO NO CELULAR OU COMPUTADOR<input id="photoFile" type="file" accept="image/jpeg,image/png,image/webp"></label><div class="admin-toolbar"><button id="uploadPhoto" class="mini-button" type="button">ENVIAR FOTO</button><button id="removePhoto" class="mini-button" type="button">REMOVER FOTO</button></div><p class="fine-print">Envio limitado a JPEG, PNG ou WebP até 5 MB. O segredo do Cloudinary fica somente no Worker.</p><button class="pill-button dark" id="saveProduct">SALVAR PRODUTO</button></form>`);
+  openModal(`<div class="section-kicker">CATÁLOGO / ${id?'EDITAR':'NOVO'}</div><h2 id="modalTitle">${id?'EDITAR PRODUTO':'CADASTRAR PRODUTO'}.</h2>${p.seededExample?'<p class="seed-review-note">Este é um exemplo: confirme nome, preço, estoque e variações antes de publicar.</p>':''}<form id="productForm" class="modal-form"><label>NOME<input name="name" maxlength="160" required value="${htm(p.name)}"></label><label>CATEGORIA<input name="category" maxlength="80" required value="${htm(p.category)}"></label><div class="modal-grid"><label>PREÇO<input name="price" type="number" min="0.01" max="100000" step=".01" required value="${htm(p.price)}"></label><label>CUSTO (OPCIONAL)<input name="cost" type="number" min="0" step=".01" value="${htm(p.cost??'')}"></label></div><div class="modal-grid"><label>DESCONTO (%)<input name="discount" type="number" min="0" max="100" value="${htm(p.discount||0)}"></label><label>ESTOQUE<input name="stock" type="number" min="0" max="100000" step="1" required value="${htm(p.stock||0)}"></label></div><label>TAMANHOS / VARIAÇÕES (SEPARADOS POR VÍRGULA)<input name="sizes" required value="${htm((p.sizes||[]).join(', '))}"></label><label>DESCRIÇÃO<textarea name="description" maxlength="1200">${htm(p.description||'')}</textarea></label><label><input name="featured" type="checkbox" ${p.featured?'checked':''}> Exibir na curadoria em destaque</label><label><input name="active" type="checkbox" ${p.active!==false?'checked':''}> Publicado no catálogo</label><div class="upload-preview">${imageUrl?`<img id="productPhotoPreview" src="${htm(imageUrl)}" alt="Prévia da foto">`:'<div id="productPhotoPreview" class="empty-state">SEM FOTO</div>'}</div><label>ESCOLHER FOTO NO CELULAR OU COMPUTADOR<input id="photoFile" type="file" accept="image/jpeg,image/png,image/webp"></label><div class="admin-toolbar"><button id="uploadPhoto" class="mini-button" type="button">ENVIAR FOTO</button><button id="removePhoto" class="mini-button" type="button">REMOVER FOTO</button></div><p class="fine-print">Envio limitado a JPEG, PNG ou WebP até 5 MB. O segredo do Cloudinary fica somente no Worker.</p><button class="pill-button dark" id="saveProduct">SALVAR PRODUTO</button></form>`);
   const fileInput=$('#photoFile'), uploadButton=$('#uploadPhoto'), saveButton=$('#saveProduct');
   fileInput.onchange=()=>{const file=fileInput.files?.[0];if(!file)return;if(!['image/jpeg','image/png','image/webp'].includes(file.type)||file.size>5*1024*1024){fileInput.value='';return toast('Escolha JPEG, PNG ou WebP de até 5 MB.');}if(previewUrl)URL.revokeObjectURL(previewUrl);previewUrl=URL.createObjectURL(file);$('#productPhotoPreview').outerHTML=`<img id="productPhotoPreview" src="${previewUrl}" alt="Prévia da foto selecionada">`;};
   $('#removePhoto').onclick=()=>{imageUrl='';imagePublicId='';if(previewUrl)URL.revokeObjectURL(previewUrl);$('#productPhotoPreview').outerHTML='<div id="productPhotoPreview" class="empty-state">SEM FOTO</div>';fileInput.value='';};
   uploadButton.onclick=async()=>{
     const file=fileInput.files?.[0];if(!file)return toast('Escolha uma foto primeiro.');if(!cloudinaryWorkerUrl)return toast('Configure o endereço do Worker no painel antes de enviar fotos.');
     uploadButton.disabled=true;uploadButton.textContent='ENVIANDO…';
-    try{const token=await auth.currentUser.getIdToken();const body=new FormData();body.append('file',file);const response=await fetch(cloudinaryWorkerUrl,{method:'POST',headers:{Authorization:`Bearer ${token}`},body});const result=await response.json();if(!response.ok)throw new Error(result.error||'O Worker recusou o envio.');if(!/^https:\/\/res\.cloudinary\.com\//.test(result.secure_url||''))throw new Error('O Worker não retornou uma URL segura do Cloudinary.');imageUrl=result.secure_url;imagePublicId=String(result.public_id||'');$('#productPhotoPreview').outerHTML=`<img id="productPhotoPreview" src="${htm(imageUrl)}" alt="Prévia da foto enviada">`;toast('Foto enviada. Salve o produto para publicar a URL.');}
+    try{const uploaded=await uploadProductPhoto(file);imageUrl=uploaded.imageUrl;imagePublicId=uploaded.imagePublicId;$('#productPhotoPreview').outerHTML=`<img id="productPhotoPreview" src="${htm(imageUrl)}" alt="Prévia da foto enviada">`;toast('Foto enviada. Salve o produto para gravar a URL segura.');}
     catch(error){console.error(error);toast(error.message||'Falha no upload da foto.');}
     finally{uploadButton.disabled=false;uploadButton.textContent='ENVIAR FOTO';}
   };
   $('#productForm').onsubmit=async event=>{
     event.preventDefault();const form=new FormData(event.currentTarget),name=String(form.get('name')).trim(),category=String(form.get('category')).trim(),price=Number(form.get('price')),stock=Number(form.get('stock')),sizes=String(form.get('sizes')).split(',').map(value=>value.trim()).filter(Boolean);
     if(!name||!category||!Number.isFinite(price)||price<=0||!Number.isInteger(stock)||sizes.length<1||sizes.length>20)return toast('Confira nome, categoria, preço, estoque e variações.');
+    if(!isCloudinaryUrl(imageUrl)||!isCloudinaryPublicId(imagePublicId))return toast('Envie uma foto válida ao Cloudinary antes de salvar o produto.');
     saveButton.disabled=true;saveButton.textContent='SALVANDO…';
     try{
       const ref=id?doc(db,'products',id):doc(collection(db,'products'));
@@ -568,6 +668,71 @@ async function toggleOffer(collectionName,id,items) {
   catch(error){console.error(error);toast(friendlyFirestoreError(error));}
 }
 
+function renderAdminOverview(el) {
+  const pending=orders.filter(order=>order.status==='Aguardando confirmação').length;
+  const inProgress=orders.filter(order=>['Reserva confirmada','Em preparação','Disponível para retirada','Em rota de entrega','Entregue'].includes(order.status)).length;
+  const recent=orders.slice(0,8);
+  el.innerHTML=`<div class="section-kicker">GRAÇA / PAINEL</div><h2>VISÃO GERAL</h2><p>Atalhos e indicadores da operação diária.</p><div class="admin-cards"><div class="metric"><span>PRODUTOS PUBLICADOS</span><strong>${activeProducts().length}</strong></div><div class="metric"><span>AGUARDANDO CONFIRMAÇÃO</span><strong>${pending}</strong></div><div class="metric"><span>EM ATENDIMENTO</span><strong>${inProgress}</strong></div><div class="metric"><span>CONTAS VIP</span><strong>${customers.length}</strong></div></div><div class="admin-toolbar"><div class="admin-shortcuts"><button class="mini-button primary" data-admin-shortcut="orders">ABRIR PEDIDOS</button><button class="mini-button" data-admin-shortcut="products">GERENCIAR PRODUTOS</button><button class="mini-button" data-admin-shortcut="analytics">ABRIR FINANCEIRO</button></div></div><h3>ÚLTIMAS SOLICITAÇÕES</h3>${recent.length?table(['CÓDIGO','CLIENTE','DATA','VALOR ESTIMADO','STATUS'],recent.map(order=>[htm(order.confirmationCode||order.id),htm(order.customerName),safeDate(order.createdAt).toLocaleDateString('pt-BR'),money(displayTotal(order)),htm(order.status)])):'<div class="empty-state">AS NOVAS SOLICITAÇÕES APARECERÃO AQUI EM TEMPO REAL.</div>'}<p class="fine-print">O faturamento e os dados de pagamento são exibidos somente na aba Análise Financeira e consideram vendas encerradas.</p>`;
+  $$('[data-admin-shortcut]').forEach(button=>button.onclick=()=>{adminTab=button.dataset.adminShortcut;renderAdmin();});
+}
+
+function renderFinanceBars(title,entries,totalCents) {
+  const rows=entries.length?entries.map(([label,data])=>{
+    const value=Number(data.revenueCents)||0,width=totalCents>0?Math.max(2,Math.min(100,value/totalCents*100)):0;
+    return `<div class="finance-bar-row"><div><span>${htm(label)}</span><strong>${money(value/100)} <small>· ${Number(data.count||0)} venda(s)</small></strong></div><i class="finance-bar-track"><b style="width:${width.toFixed(2)}%"></b></i></div>`;
+  }).join(''):'<div class="empty-state">SEM VENDAS NO PERÍODO.</div>';
+  return `<section class="finance-panel"><h3>${htm(title)}</h3>${rows}</section>`;
+}
+
+function getFinanceSales() {
+  if(analyticsFrom&&analyticsTo&&analyticsFrom>analyticsTo)return [];
+  const from=analyticsFrom?new Date(`${analyticsFrom}T00:00:00`):null;
+  const to=analyticsTo?new Date(`${analyticsTo}T23:59:59.999`):null;
+  return orders.filter(order=>{
+    if(order.status!=='Concluído'||!order.closedAt)return false;
+    const closed=safeDate(order.closedAt);
+    return (!from||closed>=from)&&(!to||closed<=to);
+  });
+}
+
+function exportFinanceCsv(sales) {
+  const quote=value=>{let text=String(value??'');if(/^[=+\-@\t\r]/.test(text))text=`'${text}`;return `"${text.replace(/"/g,'""')}"`;};
+  const rows=[['Código','Data de encerramento','Cliente','Valor final (R$)','Canal de venda','Forma de pagamento','Parcelas','Valor por parcela (R$)','Parcela final (R$)']];
+  for(const order of sales)rows.push([order.confirmationCode||order.id,safeDate(order.closedAt).toLocaleString('pt-BR'),order.customerName,(Number(order.saleTotalCents)/100).toFixed(2),order.salesChannel,order.paymentMethod,order.installmentCount,(Number(order.installmentValueCents)/100).toFixed(2),(Number(order.finalInstallmentValueCents)/100).toFixed(2)]);
+  const blob=new Blob(['\uFEFF'+rows.map(row=>row.map(quote).join(';')).join('\r\n')],{type:'text/csv;charset=utf-8'});
+  const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=`relatorio-financeiro-${analyticsFrom||'inicio'}-${analyticsTo||'hoje'}.csv`;document.body.append(link);link.click();link.remove();URL.revokeObjectURL(url);
+}
+
+function renderFinanceAnalytics(el) {
+  const sales=getFinanceSales(),totalCents=sales.reduce((sum,order)=>sum+Number(order.saleTotalCents||0),0),count=sales.length,average=count?totalCents/count:0;
+  const payments=new Map(),channels=new Map(),itemsByProduct=new Map();
+  const addGroup=(map,key,revenueCents)=>{const current=map.get(key)||{revenueCents:0,count:0};current.revenueCents+=revenueCents;current.count++;map.set(key,current);};
+  for(const order of sales){
+    const value=Number(order.saleTotalCents||0);addGroup(payments,order.paymentMethod||'Não informado',value);addGroup(channels,order.salesChannel||'Não informado',value);
+    const items=order.items||[],base=items.reduce((sum,item)=>sum+Number(item.unitPriceCents||0)*Number(item.quantity||0),0);
+    let remaining=value;
+    items.forEach((item,index)=>{
+      const quantity=Number(item.quantity||0),lineBase=Number(item.unitPriceCents||0)*quantity;
+      const allocated=index===items.length-1?remaining:(base>0?Math.round(value*lineBase/base):Math.floor(value/Math.max(1,items.length)));
+      remaining-=allocated;
+      const key=String(item.productId||item.name||'Produto');
+      const current=itemsByProduct.get(key)||{name:item.name||key,quantity:0,revenueCents:0,marginCents:0,costKnown:true};
+      current.quantity+=quantity;current.revenueCents+=allocated;
+      const product=products.find(candidate=>String(candidate.id)===key);
+      if(product?.cost!==null&&product?.cost!==undefined&&Number.isFinite(Number(product.cost)))current.marginCents+=allocated-Math.round(Number(product.cost)*100)*quantity;
+      else current.costKnown=false;
+      itemsByProduct.set(key,current);
+    });
+  }
+  const paymentEntries=[...payments.entries()].sort((a,b)=>b[1].revenueCents-a[1].revenueCents),channelEntries=[...channels.entries()].sort((a,b)=>b[1].revenueCents-a[1].revenueCents);
+  const topProducts=[...itemsByProduct.values()].sort((a,b)=>b.quantity-a.quantity).slice(0,10);
+  const productRows=topProducts.map(product=>{const margin=product.costKnown?`${money(product.marginCents/100)}${product.revenueCents?` · ${((product.marginCents/product.revenueCents)*100).toFixed(1)}%`:''}`:'Cadastre o custo atual';return [htm(product.name),String(product.quantity),money(product.revenueCents/100),htm(margin)];});
+  el.innerHTML=`<div class="section-kicker">GESTÃO / FINANCEIRO</div><h2>ANÁLISE FINANCEIRA</h2><p>Relatórios de vendas encerradas, valores finais e formas de pagamento.</p><div class="finance-filters"><label>DE <input id="financeFrom" type="date" value="${htm(analyticsFrom)}"></label><label>ATÉ <input id="financeTo" type="date" value="${htm(analyticsTo)}"></label><button id="exportFinanceCsv" class="mini-button primary">BAIXAR RELATÓRIO CSV</button></div><div class="admin-cards finance-summary"><div class="metric"><span>FATURAMENTO NO PERÍODO</span><strong>${money(totalCents/100)}</strong></div><div class="metric"><span>VENDAS ENCERRADAS</span><strong>${count}</strong></div><div class="metric"><span>TICKET MÉDIO</span><strong>${money(average/100)}</strong></div></div><div class="finance-charts">${renderFinanceBars('VENDAS POR FORMA DE PAGAMENTO',paymentEntries,totalCents)}${renderFinanceBars('VENDAS POR CANAL',channelEntries,totalCents)}</div><section class="finance-panel"><h3>PRODUTOS MAIS VENDIDOS E DESEMPENHO</h3>${productRows.length?table(['PRODUTO','UNIDADES','RECEITA ALOCADA','MARGEM ESTIMADA'],productRows):'<div class="empty-state">AS VENDAS ENCERRADAS MOSTRARÃO OS PRODUTOS AQUI.</div>'}<p class="fine-print">A margem usa o custo atual cadastrado no produto, não um custo histórico gravado no pedido. Atualize os custos para melhorar a estimativa.</p></section><section class="finance-panel"><h3>RELATÓRIO DETALHADO DE VENDAS</h3>${sales.length?table(['CÓDIGO','DATA','CLIENTE','VALOR','CANAL','PAGAMENTO'],sales.map(order=>[htm(order.confirmationCode||order.id),safeDate(order.closedAt).toLocaleDateString('pt-BR'),htm(order.customerName),money(Number(order.saleTotalCents)/100),htm(order.salesChannel),htm(order.paymentMethod)])):'<div class="empty-state">NENHUMA VENDA ENCERRADA NESTE PERÍODO.</div>'}</section><p class="fine-print">A tela soma até as 250 solicitações mais recentes carregadas no painel. Use o filtro de datas; o CSV contém as vendas encerradas carregadas nesse mesmo limite.</p>`;
+  $('#financeFrom').onchange=event=>{analyticsFrom=event.target.value;renderFinanceAnalytics(el);};
+  $('#financeTo').onchange=event=>{analyticsTo=event.target.value;renderFinanceAnalytics(el);};
+  $('#exportFinanceCsv').onclick=()=>exportFinanceCsv(sales);
+}
+
 renderAdminContent = function() {
   const el=$('#adminContent');if(!el)return;
   if(adminTab==='products')return renderAdminProducts();
@@ -579,9 +744,8 @@ renderAdminContent = function() {
   if(adminTab==='messages'){
     return renderAdminMessages();
   }
-  const pending=orders.filter(order=>order.status==='Aguardando confirmação').length;
-  const confirmed=orders.filter(order=>order.status!=='Aguardando confirmação'&&order.status!=='Cancelado').length;
-  el.innerHTML=`<div class="section-kicker">GRAÇA / RESERVAS</div><h2>${adminTab==='analytics'?'ANÁLISES DE SOLICITAÇÕES':'VISÃO GERAL'}</h2><p>Esta etapa registra solicitações de reserva, não faturamento nem vendas pagas.</p><div class="admin-cards"><div class="metric"><span>PRODUTOS ATIVOS</span><strong>${activeProducts().length}</strong></div><div class="metric"><span>AGUARDANDO CONFIRMAÇÃO</span><strong>${pending}</strong></div><div class="metric"><span>EM ATENDIMENTO / CONCLUÍDOS</span><strong>${confirmed}</strong></div><div class="metric"><span>CONTAS VIP</span><strong>${customers.length}</strong></div></div><h3>ÚLTIMAS SOLICITAÇÕES</h3>${orders.length?table(['CÓDIGO','CLIENTE','DATA','VALOR ESTIMADO','STATUS'],orders.slice(0,8).map(order=>[htm(order.confirmationCode||order.id),htm(order.customerName),safeDate(order.createdAt).toLocaleDateString('pt-BR'),money(displayTotal(order)),htm(order.status)])):'<div class="empty-state">AS NOVAS SOLICITAÇÕES APARECERÃO AQUI EM TEMPO REAL.</div>'}<p class="fine-print">Nenhum pagamento é processado. Só confirmar uma reserva desconta estoque; cancelar uma solicitação confirmada devolve as unidades em uma transação.</p>`;
+  if(adminTab==='analytics')return renderFinanceAnalytics(el);
+  return renderAdminOverview(el);
 };
 
 onAuthStateChanged(auth,async user=>{
