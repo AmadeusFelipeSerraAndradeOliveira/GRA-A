@@ -1,21 +1,37 @@
 # Revisão das regras do Firestore
 
-## Estrutura e acessos encontrados
+## Escopo
 
-- `admins/{uid}`: documento administrativo gerenciado manualmente no Console do Firebase. A existência do documento, ou a custom claim `admin: true`, autoriza o painel. O cliente autenticado pode consultar somente o próprio documento; nenhum cliente pode listar, criar, editar ou excluir documentos dessa coleção.
-- `customers/{uid}`: perfil pertencente ao usuário autenticado, com `uid`, `name`, `email`, `phone`, `address`, `createdAt` e `updatedAt`. O usuário pode ler o próprio perfil, criar um perfil com o próprio UID e alterar apenas nome, telefone, endereço e data de atualização. Exclusão é negada.
-- `products/{productId}`: catálogo público necessário à vitrine. Apenas administrador cria/edita; exclusão é negada. O documento valida nome, preço, estoque, tamanhos, ativo e campos opcionais de desconto, custo e estoque reservado.
-- `orders/{orderId}`: escrita de criação e atualização de pagamento feita pelas Cloud Functions com Admin SDK. O cliente lê apenas seus pedidos; administrador pode alterar status e data de atualização. Exclusão é negada.
-- `coupons/{couponCode}`: consulta e manutenção reservadas a administradores. Criação e atualização validam os campos permitidos; exclusão é negada.
+- `admins/{uid}`: cada usuário pode consultar o próprio registro para confirmar o papel. Criação, alteração e remoção ficam negadas ao cliente; autorizações são administradas no Console ou por Admin SDK.
+- `products` e `categories`: leitura pública somente quando `active == true`; administradores também consultam rascunhos/inativos. Apenas administradores podem criar ou editar; exclusão é negada. Campos, tipos, limites, tamanhos e referências de imagem são verificados.
+- `orders`: criação permitida apenas para a sessão autenticada indicada no próprio documento, inclusive sessão anônima do checkout. A regra aceita até seis combinações, compara nome, variação e preço ao produto atual e recalcula o total em centavos. Um novo pedido sempre começa em `Aguardando confirmação`, com `stockApplied: false`. Leitura é restrita ao proprietário ou administrador; exclusão é negada.
+- `orders` atualização: apenas administradores podem avançar por transições definidas. As regras validam o documento completo, preservam os dados e o prefixo do histórico e conferem os indicadores de estoque. O código do painel confirma/cancela em transação, lendo o pedido e todos os produtos antes de atualizar estoque e status juntos. Só o administrador altera estoque.
+- `customers`: leitura pelo titular ou administração; criação e atualização limitadas ao perfil do titular e validadas por esquema. E-mail, UID e data de cadastro são imutáveis para o cliente. Exclusão negada.
+- `messages`: qualquer sessão autenticada pode criar uma mensagem com limites de tamanho; somente administradores listam/leem e mudam o estado, sem alterar conteúdo ou identidade do remetente. Exclusão negada.
+- `coupons` e `campaigns`: rascunhos ficam administrativos; conteúdo publicado só pode ser lido por membro autenticado, verificado e não anônimo. Exclusão negada.
+- `settings/cloudinary`: o endereço público do Worker é legível; somente administradores o alteram. Nenhum segredo Cloudinary é salvo no Firestore ou navegador.
+- Qualquer coleção/caminho não listado é negado por padrão.
 
-O código do navegador lê `admins/{uid}` com `getDoc` e acompanha `orders/{orderId}` com `onSnapshot`. Catálogo, painel, clientes e relatórios ainda têm dados locais no `localStorage`. As Cloud Functions usam Admin SDK para `products`, `coupons` e `orders`, portanto essas operações de servidor não são limitadas pelas regras do cliente.
+## Casos de abuso avaliados
 
-## Revisão de caminhos de escalada
+1. Visitante tenta ler o pedido de outra pessoa: bloqueado porque a consulta deve restringir `uid` à sessão, e leitura individual compara o proprietário.
+2. Visitante tenta se promover a administrador: bloqueado porque `admins` não aceita escrita do cliente; a regra de administrador deriva somente da custom claim ou existência de documento controlado por Console/Admin SDK.
+3. Cliente envia preço ou total alterado: bloqueado pela comparação dos itens com os preços atuais do catálogo e pela soma do total no Rules Engine.
+4. Visitante tenta baixar estoque ao criar uma solicitação: bloqueado porque criação exige status inicial e `stockApplied: false`; clientes não podem atualizar produtos ou pedidos.
+5. Dois administradores confirmam a mesma reserva ao mesmo tempo: a transação do app é repetida pelo Firestore após conflito; a segunda leitura vê estoque/status atualizado e falha se não houver saldo.
+6. Cliente tenta apagar histórico de pedidos, clientes, produtos ou mensagens: bloqueado explicitamente.
+7. Visitante tenta ler contato, endereço, e-mail ou WhatsApp de terceiros: bloqueado por leitura administrativa/proprietária das coleções privadas.
+8. Cliente tenta ler cupom de rascunho ou entrar na VIP como visitante anônimo: bloqueado pelo status publicado, autenticação, confirmação de e-mail e tipo de provedor.
+9. Visitante consulta produto ou categoria inativa: bloqueado pela condição de publicação da consulta; o painel administrativo pode consultar todos.
+10. Cliente tenta alterar o histórico, total ou itens de uma reserva: bloqueado pela validação completa do registro e imutabilidade dos campos originais.
 
-- Visitante sem login: catálogo público somente leitura; documentos privados e dados administrativos permanecem bloqueados.
-- Usuário autenticado: pode consultar somente o próprio documento de função e o próprio pedido/perfil; a regra não permite escrever na coleção `admins` nem excluir clientes ou pedidos.
-- Tentativa de autoelevação: gravar `admins/{uid}` pelo navegador falha porque create/update estão negados; a concessão deve vir do Console Firebase ou de processo confiável com Admin SDK.
-- Alterar status de pedido: usuário comum não pode editar pedidos; administrador só pode alterar os campos `status` e `updatedAt` e usar os estados permitidos.
-- Listar `admins`: negado; a tela verifica apenas o documento do UID autenticado.
+## Validação e limites
 
-Esta revisão é estática. A sintaxe e o comportamento final das regras precisam ser validados no Firebase Emulator ou com `firebase deploy --only firestore:rules` antes de considerar o painel disponível no site publicado.
+`npm run build` confirma a sintaxe JavaScript e os arquivos da aplicação, mas não compila regras. A tentativa de iniciar o Firebase Emulator Suite não avançou porque Java não está instalado/disponível no PATH desta máquina. Portanto, publique as regras somente depois de executá-las com o Emulator Suite e casos positivos/negativos em ambiente local ou de teste, antes de colocá-las na base real.
+
+As regras são um protótipo e ainda precisam de compilação e testes positivos/negativos no Emulator Suite. Só administradores escrevem estoque, mas alterações manuais diretas no Console podem contornar o fluxo transacional. O fluxo anônimo pode receber spam; App Check e limitação de taxa não estão configurados. Registros antigos continuam legíveis, mas formatos da integração anterior não podem ser atualizados pelo fluxo novo.
+
+## Aviso de protótipo
+
+As regras foram preparadas para proteger os dados com acesso por proprietário/administrador, validação de preço/total e negação por padrão. Revise-as e confirme-as no Emulator Suite antes de publicar amplamente. Posso ajudar a endurecê-las depois dos resultados desses testes.
+
