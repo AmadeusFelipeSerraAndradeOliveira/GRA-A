@@ -1,9 +1,10 @@
 {
   "scripts": {
-    "dev": "node dev-server.js"
+    "dev": "node dev-server.js",
+    "build": "node scripts/check-build.cjs"
   },
   "dependencies": {
-    "@mercadopago/sdk-js": "^0.0.3",
     "firebase": "^13.1.0"
   }
 }
+
