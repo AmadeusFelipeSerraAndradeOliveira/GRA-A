@@ -1,71 +1,80 @@
 # GRAÇA | Gente, Moda e Comunidade
 
-Loja demonstrativa da GRAÇA GMC com catálogo, sacola, área de cliente e painel administrativo.
+Loja editorial de moda com catálogo no Firestore, carrinho, solicitação de reserva como visitante, cadastro opcional da Comunidade VIP e painel administrativo.
 
-**Site ao vivo:** https://graca-454ff.web.app
+## Modelo desta versão
 
-O site está publicado no Firebase Hosting. As rotas de pagamento dependem da publicação das Cloud Functions e da configuração segura das credenciais do Mercado Pago; o Firebase exige o plano Blaze para publicar essas funções.
+- A pessoa escolhe produtos, tamanhos e quantidades e envia uma **solicitação**, sem cartão, Pix ou cobrança.
+- Só nome e WhatsApp são obrigatórios. Endereço é pedido apenas para entrega; retirada, observação e consentimento de novidades são opcionais.
+- O código mostrado após o envio começa com `GRA-`. O status inicial é `Aguardando confirmação`; a equipe ainda precisa confirmar estoque e combinar o atendimento.
+- Pedidos pendentes não alteram estoque. A confirmação administrativa relê produtos e estoque em uma transação Firestore. Pedidos confirmados podem ser cancelados, com devolução das unidades na mesma transação. Pedidos e clientes não têm ação de exclusão.
+- Reservas de visitante usam Firebase Anonymous Authentication em segundo plano. Isso não mostra tela de cadastro nem pede senha; é necessário habilitar o provedor Anônimo no Firebase.
+- O cadastro por e-mail é opcional. A área VIP exige conta com e-mail confirmado. Cupons e campanhas aparecem somente depois de publicados no painel. O consentimento de marketing é independente e não vem marcado.
+- Fotos são enviadas a um Cloudflare Worker, que confirma a conta administrativa e assina o envio para o Cloudinary. O API Secret nunca entra no navegador. Remover a foto do produto limpa a referência; o arquivo antigo no Cloudinary não é apagado.
+- Contatos enviados pelo formulário são salvos na coleção privada `messages` para a equipe responder fora da loja. O site não envia mensagens automáticas por WhatsApp.
 
-## Abrir a prévia
+## Rodar e validar
 
-Na pasta do projeto, execute `npm run dev` e abra `http://localhost:5501`. O servidor local entrega o site e encaminha `/api/mercadopago/config` e `/api/mercadopago/order` ao Firebase pelo servidor, evitando CORS no navegador. O Live Server comum não configura esse proxy; nesse caso, use a porta e o endereço mostrados pelo servidor deste projeto. Para operações de login OAuth, `localhost` também precisa estar autorizado no Firebase Authentication.
+```powershell
+npm install
+npm run dev
+```
 
-## Login e acesso administrativo
+Abra `http://localhost:5501`. O comando `npm run build` verifica a sintaxe JavaScript e confere se a vitrine deixou de carregar o SDK de pagamento antigo. O projeto é HTML/CSS/JavaScript estático, sem etapa de empacotamento.
 
-- O login e o cadastro usam Firebase Authentication com e-mail e senha.
-- O cadastro pede uma senha e envia um link de confirmação. O cliente precisa confirmar o e-mail antes de acessar a conta, a Comunidade VIP ou o checkout.
-- A recuperação usa o link seguro de redefinição de senha do Firebase.
-- O painel administrativo aceita contas verificadas com a custom claim `admin: true` ou com um documento autorizado em Firestore. Para autorizar pelo documento, abra `Firestore Database → admins → Adicionar documento`, use como ID o UID exato exibido no Firebase Authentication e salve. O documento pode ficar sem campos. Somente o Console do Firebase pode criar ou remover documentos dessa coleção; clientes não podem conceder a si mesmos o acesso.
-- Ative o provedor **E-mail/senha** no Firebase Authentication e autorize `localhost`, `127.0.0.1` e o domínio publicado em **Authentication → Settings → Authorized domains**.
+As alterações de interface podem ser vistas sem login. Para reservar, precisa haver produtos ativos no Firestore e o provedor Anônimo habilitado. Não faça uma solicitação de teste no projeto de produção: ela cria um registro persistente. Use o Emulator Suite ou um projeto Firebase de teste para validar gravações.
 
-## Mercado Pago
+## Firebase necessário
 
-O checkout usa **Checkout Transparente com a Orders API**. O Card Payment Brick captura e tokeniza cartões; o Pix é criado como order no servidor e a tela da loja apresenta QR Code e Pix Copia e Cola. O status é acompanhado pelo documento da order no Firestore, atualizado somente depois da validação do Webhook. O backend HTTPS está em `functions/index.js`, com Firebase Functions, validação de usuário, cálculo de valores no servidor, reserva de estoque, idempotência e conferência HMAC.
+No projeto `graca-454ff`:
 
-A Orders API é a opção recomendada atualmente para Checkout Transparente. O **Status Screen Brick oficial** exige um ID da Payments API, que o painel já sinaliza como legada e próxima de ser descontinuada; por isso a tela de status deste projeto é própria e acompanha os estados da Orders API.
+1. Em **Authentication → Sign-in method**, habilite **Anonymous** e **Email/Password**. Para clientes VIP e administradores, mantenha a confirmação de e-mail. Em **Settings → Authorized domains**, autorize os domínios de desenvolvimento e hospedagem, sem incluir portas: `localhost`, `127.0.0.1`, `graca-454ff.web.app` e `graca-454ff.firebaseapp.com`.
+2. Cadastre a conta de administrador em **Authentication** e confirme o e-mail. Em Firestore, crie `admins/{UID}` usando o UID exato da conta, ou defina a custom claim `admin: true` pelo SDK Admin. As regras impedem que o próprio site crie ou remova permissões de administrador.
+3. Revise e publique as regras: `firebase deploy --only firestore:rules --project graca-454ff`.
+4. Cadastre produtos pela área administrativa ou importe explicitamente o catálogo que já esteja salvo neste navegador. O catálogo não é preenchido com produtos demonstrativos automaticamente. Para publicar, preencha nome, categoria, preço, estoque, variações e marque **Publicado no catálogo**.
+5. Nas coleções `products`, `categories`, `customers`, `orders`, `messages`, `admins`, `coupons`, `campaigns` e `settings`, as regras limitam leitura e escrita por função. Clientes podem ler somente seus próprios pedidos; visitantes não consultam pedidos por código público.
 
-Antes de liberar cobranças:
+O formulário de contato e as reservas salvam no Firestore diretamente com Firebase Auth. Regras verificam os campos, limites, UID, preço atual e total da reserva. A equipe altera status apenas pelo painel; a confirmação de estoque usa uma transação Firestore para impedir baixa duplicada ou estoque negativo.
 
-1. Crie a aplicação como **Checkout Transparente** e selecione **API de Orders**. O conteúdo da documentação enviado na conversa contém exemplos mascarados, não credenciais utilizáveis.
-2. Ative o plano Blaze se o projeto ainda estiver no plano Spark. Cloud Functions e o Secret Manager precisam estar disponíveis para publicar o backend e guardar as credenciais.
-3. O Firestore padrão do projeto já existe (edição Standard, região `nam5`) e está vazio. Cadastre `products/{id}` com `name`, `active`, `price`, `cost`, `discount`, `stock`, `reservedStock` e `sizes`. Para cupons, use `coupons/{CODIGO}` com `active`, `value`, `maxUses`, `uses` e `reservedUses`.
-4. O backend usa o OAuth `client_credentials` para solicitar um Access Token para a própria aplicação. Ele envia somente `client_id`, `client_secret`, `grant_type` e, no modo de teste, `test_token: "true"`. `code`, `code_verifier`, `redirect_uri` e `refresh_token` pertencem a outros grants e não entram nessa requisição. O token fica em memória no servidor e é renovado conforme o `expires_in` retornado pelo Mercado Pago. Os segredos nunca são enviados ao navegador. Cadastre o Client ID, Client Secret da aplicação e a assinatura secreta de Webhook digitando-os diretamente nos prompts locais:
+**Limite de custo e abuso:** esta implementação não depende de Cloud Functions, Blaze, Firebase Storage nem gateway. Firebase Spark ainda tem limites de leitura, gravação e tráfego; Auth anônimo também pode ser abusado para gerar solicitações. App Check, limitação de taxa e detecção de spam não estão configurados neste branch. Verifique cotas e proteção contra abuso antes de uma campanha pública.
 
-   ```powershell
-   firebase functions:secrets:set MP_CLIENT_ID --project graca-454ff
-   firebase functions:secrets:set MP_CLIENT_SECRET --project graca-454ff
-   firebase functions:secrets:set MP_WEBHOOK_SECRET --project graca-454ff
-   ```
+### Cotas públicas consultadas em 06/11/2026
 
-   Para manter os testes, `MP_TEST_MODE` começa como `true`. Para produção, crie `functions/.env.graca-454ff` com `MP_TEST_MODE=false` e use as credenciais de produção. Não inclua esse arquivo no Git.
-5. Cadastre no painel do Mercado Pago o Webhook `https://graca-454ff.web.app/api/mercadopago/webhook` e habilite o evento **Order (Mercado Pago)**.
-6. A função autenticada `/api/mercadopago/config` obtém a Public Key da resposta OAuth e devolve somente essa chave pública ao comprador conectado. As rotas de configuração, criação de orders e Webhook ficam em `/api/mercadopago/config`, `/api/mercadopago/order` e `/api/mercadopago/webhook`.
-7. Depois de cadastrar os três segredos, publique regras, funções e hospedagem com Firebase CLI: `firebase deploy --only firestore:rules,functions,hosting --project graca-454ff`. Faça compras de teste em HTTPS antes de habilitar credenciais de produção.
+- O Cloud Firestore informa cota gratuita diária de 50 mil leituras, 20 mil gravações e 20 mil exclusões, mais 1 GiB armazenado e 10 GiB/mês de transferência de saída para a base elegível. Listeners em tempo real também consomem leituras quando documentos entram ou mudam no resultado ([cotas e cobrança](https://firebase.google.com/docs/firestore/pricing)).
+- O plano Free do Cloudflare Workers permite até 100 mil requisições por dia e 50 sub-requisições por chamada. O Worker de upload foi mantido pequeno e usa poucas chamadas externas ([limites do Workers](https://developers.cloudflare.com/workers/platform/limits/)).
+- A página atual do Cloudinary lista 25 créditos mensais no plano Free; armazenamento, transformações e tráfego de imagens consomem esses créditos. A disponibilidade e os limites devem ser monitorados no painel da conta ([planos do Cloudinary](https://cloudinary.com/pricing), [medição de uso](https://cloudinary.com/documentation/billing_and_plans)).
 
-O projeto contém o cliente dos Bricks, o OAuth de servidor, as Cloud Functions e a conexão de projeto para o MCP do Mercado Pago, mas depende do cadastro de credenciais reais, de catálogo no Firestore, da publicação das funções e da configuração do Webhook.
+Esses limites permitem começar sem ativar Blaze nem contratar um serviço, mas não significam uso ilimitado nem custo zero garantido em qualquer volume. Confirme os limites antes de ampliar o tráfego e monitore o uso nas contas dos fornecedores.
 
-## Painel de análises
+## Configurar upload Cloudinary
 
-A aba **Análises** oferece filtro por período, faturamento de pedidos marcados como pagos, ticket médio, divisão por Pix/cartão, desempenho dos produtos, margem registrada, buscas locais, clientes sem compra nos últimos 45 dias e exportação de três arquivos CSV compatíveis com Excel. A tela ainda lê `localStorage`; os pedidos criados pelo backend ficam no Firestore, então é necessária uma migração da origem dos dados antes de usar os relatórios como painel de produção.
+O worker está em `cloudinary-worker/`. A implantação depende da conta Cloudflare e das credenciais Cloudinary do proprietário; não há credenciais ou URL inventadas no repositório.
 
-O editor de produtos inclui custo de aquisição para calcular a margem das novas vendas. Pedidos antigos sem esse custo aparecem sem margem histórica calculada.
+1. Crie/acesse sua conta Cloudinary e guarde o Cloud name, API Key e API Secret.
+2. Instale o Wrangler pela distribuição oficial e autentique sua conta Cloudflare: `npx wrangler@latest login`.
+3. Grave os três segredos usando os comandos em [cloudinary-worker/README.md](cloudinary-worker/README.md). Não cole os valores no chat, no HTML ou no `wrangler.toml`.
+4. Publique com `npx wrangler@latest deploy --config cloudinary-worker/wrangler.toml`.
+5. No painel da loja, abra **Produtos → Configurar upload** e cole o endereço `https://…workers.dev/upload` retornado pelo Wrangler. O endpoint público não é uma chave secreta.
+6. Faça um envio de teste controlado. O Worker aceita JPEG, PNG e WebP até 5 MB e somente para uma conta administrativa verificada.
 
-## Dados e limitações atuais
+O Worker limita requisições aos domínios em `ALLOWED_ORIGINS`. Atualize a lista antes de publicar em um domínio diferente. A conta Cloudinary precisa permitir os uploads assinados da aplicação; os limites do plano gratuito podem mudar.
 
-- Catálogo, clientes, comentários, buscas e relatórios ainda usam `localStorage` neste protótipo. Os pagamentos e pedidos criados pelo backend usam o Firestore, mas ainda não são sincronizados de volta ao painel administrativo local.
-- Autenticação e senha são verificadas pelo Firebase Authentication; a senha nunca é salva no site.
-- Os relatórios são uma prévia operacional local, não um livro fiscal. Em produção, o webhook assinado deve ser a fonte confiável para confirmação de pagamento.
-- Pedidos e clientes não têm ação para exclusão definitiva. Um pedido pode ser cancelado mudando o status.
-- Não use dados reais de compradores até confirmar a instância e localização do Firestore, definir regras de segurança, migrar a loja/painel para dados compartilhados, implantar o backend e configurar a política de privacidade.
+## Dados anteriores e integrações pausadas
 
-## Estrutura
+Produtos que já estavam no Firestore continuam lá e não são apagados. O painel também deixa registros antigos de pedidos visíveis; pedidos com formato/status da integração anterior não podem ser confirmados por este novo fluxo. O catálogo salvo no navegador só é enviado se um administrador escolher a importação e confirmar a lista.
 
-- `index.html`: estrutura da loja e carregamento dos SDKs.
-- `style.css`: identidade visual e responsividade.
-- `app.js`: catálogo, autenticação, checkout e painel local.
-- `firebase.js`: inicialização do app web Firebase existente (`graca-454ff`).
-- `firestore.rules`: acesso de clientes e administradores; pedidos e clientes não podem ser apagados pelo cliente web.
-- `payment-config.js`: URLs públicas das Cloud Functions do Mercado Pago; a Public Key é obtida com segurança pelo endpoint de configuração após o login.
-- `payments.js`: integração do Card Payment Brick e envio de orders Pix.
-- `functions/index.js`: criação segura de pagamento, reserva de estoque e recebimento/validação de Webhooks.
-- `assets/`: mídia editorial.
+O checkout Mercado Pago, o SDK de cartão/Pix, as rotas de pagamento e Cloud Functions ficam fora do fluxo desta etapa. Não publicar nem executar `firebase deploy --only functions`. A aplicação antiga e os arquivos de integração foram removidos do branch proposto, preservando os registros existentes no Firestore.
+
+## Arquivos principais
+
+- `index.html`, `style.css`: identidade da marca, vitrine e experiência mobile.
+- `app.js`: catálogo, carrinho, reserva, cadastro VIP, painel e sincronização em tempo real.
+- `firestore.rules`: validação de catálogo, reservas, estoque, mensagens e conteúdo VIP; acesso negado por padrão.
+- `cloudinary-worker/src/index.js`: autenticação Firebase e upload assinado no Cloudinary.
+- `cloudinary-worker/wrangler.toml`: projeto Firebase e origens locais/publicadas permitidas no CORS.
+- `scripts/check-build.cjs`: checagens de sintaxe e ausência do checkout antigo.
+
+## Validação disponível
+
+`npm run build` é uma verificação estática, não um teste de integração. A validação das regras pelo Firebase Emulator Suite ainda precisa ser feita em uma máquina com Java instalado. Não foram criados pedidos, clientes, produtos ou uploads na base de produção durante a revisão local.
+
