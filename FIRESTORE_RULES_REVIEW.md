@@ -2,10 +2,10 @@
 
 ## Escopo
 
-- `admins/{uid}`: cada usuário pode consultar o próprio registro para confirmar o papel. Criação, alteração e remoção ficam negadas ao cliente; autorizações são administradas no Console ou por Admin SDK.
-- `products` e `categories`: leitura pública somente quando `active == true`; administradores também consultam rascunhos/inativos. Apenas administradores podem criar ou editar; exclusão é negada. Campos, tipos, limites, tamanhos e referências de imagem são verificados.
+- `admins/{uid}`: cada usuário pode consultar o próprio registro para confirmar o papel. Criação, alteração e remoção ficam negadas ao cliente; autorizações são administradas no Console ou por Admin SDK. As regras exigem também e-mail administrativo verificado.
+- `products` e `categories`: leitura pública somente quando `active == true`; administradores também consultam rascunhos/inativos. Apenas administradores podem criar ou editar; exclusão é negada. Toda gravação de produto exige URL `https://res.cloudinary.com/.../image/upload/` e ID dentro de `graca/products/`. O campo opcional `seededExample` é booleano; a rotina de exemplos usa `active: false`.
 - `orders`: criação permitida apenas para a sessão autenticada indicada no próprio documento, inclusive sessão anônima do checkout. A regra aceita até seis combinações, compara nome, variação e preço ao produto atual e recalcula o total em centavos. Um novo pedido sempre começa em `Aguardando confirmação`, com `stockApplied: false`. Leitura é restrita ao proprietário ou administrador; exclusão é negada.
-- `orders` atualização: apenas administradores podem avançar por transições definidas. As regras validam o documento completo, preservam os dados e o prefixo do histórico e conferem os indicadores de estoque. O código do painel confirma/cancela em transação, lendo o pedido e todos os produtos antes de atualizar estoque e status juntos. Só o administrador altera estoque.
+- `orders` atualização: apenas administradores podem avançar por transições definidas. As regras validam o documento completo, preservam os dados e o histórico e conferem os indicadores de estoque. Confirmação/cancelamento altera estoque em transação. Depois de `Entregue`, o encerramento para `Concluído` exige canal, forma de pagamento, valor final, número de parcelas e valores das parcelas que fecham exatamente o total. A conclusão não altera estoque; pedidos e clientes não podem ser apagados.
 - `customers`: leitura pelo titular ou administração; criação e atualização limitadas ao perfil do titular e validadas por esquema. E-mail, UID e data de cadastro são imutáveis para o cliente. Exclusão negada.
 - `messages`: qualquer sessão autenticada pode criar uma mensagem com limites de tamanho; somente administradores listam/leem e mudam o estado, sem alterar conteúdo ou identidade do remetente. Exclusão negada.
 - `coupons` e `campaigns`: rascunhos ficam administrativos; conteúdo publicado só pode ser lido por membro autenticado, verificado e não anônimo. Exclusão negada.
@@ -24,12 +24,14 @@
 8. Cliente tenta ler cupom de rascunho ou entrar na VIP como visitante anônimo: bloqueado pelo status publicado, autenticação, confirmação de e-mail e tipo de provedor.
 9. Visitante consulta produto ou categoria inativa: bloqueado pela condição de publicação da consulta; o painel administrativo pode consultar todos.
 10. Cliente tenta alterar o histórico, total ou itens de uma reserva: bloqueado pela validação completa do registro e imutabilidade dos campos originais.
+11. Cadastro ou atualização tenta guardar URL de foto fora do Cloudinary: bloqueado pela validação do domínio e do identificador público da pasta de produtos.
+12. Encerramento tenta omitir canal/pagamento ou gravar parcelas que não somam o valor final: bloqueado por `validSalesMetadata`; só a transição `Entregue` → `Concluído` é aceita.
 
 ## Validação e limites
 
-`npm run build` confirma a sintaxe JavaScript e os arquivos da aplicação, mas não compila regras. A tentativa de iniciar o Firebase Emulator Suite não avançou porque Java não está instalado/disponível no PATH desta máquina. Portanto, publique as regras somente depois de executá-las com o Emulator Suite e casos positivos/negativos em ambiente local ou de teste, antes de colocá-las na base real.
+`npm run build` confirma a sintaxe JavaScript e verificações estáticas dos fluxos, mas não compila regras. A tentativa de iniciar o Firebase Emulator Suite não avançou porque Java não está instalado/disponível no PATH desta máquina. A consulta da edição de Firestore pelo Firebase CLI também não pôde ser executada porque o sandbox bloqueou a leitura do arquivo local de configuração do CLI; o arquivo de regras do projeto declara Standard. Portanto, publique as regras somente depois de executá-las com o Emulator Suite e casos positivos/negativos em ambiente local ou de teste, antes de colocá-las na base real.
 
-As regras são um protótipo e ainda precisam de compilação e testes positivos/negativos no Emulator Suite. Só administradores escrevem estoque, mas alterações manuais diretas no Console podem contornar o fluxo transacional. O fluxo anônimo pode receber spam; App Check e limitação de taxa não estão configurados. Registros antigos continuam legíveis, mas formatos da integração anterior não podem ser atualizados pelo fluxo novo.
+As regras são um protótipo e ainda precisam de compilação e testes positivos/negativos no Emulator Suite. Só administradores escrevem estoque, mas alterações manuais diretas no Console podem contornar o fluxo transacional. O fluxo anônimo pode receber spam; App Check e limitação de taxa não estão configurados. Relatórios exibem no máximo as 250 solicitações mais recentes carregadas, e a margem usa o custo atual cadastrado, sem histórico de custo por venda. Registros antigos continuam legíveis, mas formatos da integração anterior podem não permitir transições pelo novo fluxo.
 
 ## Aviso de protótipo
 
