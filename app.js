@@ -11,8 +11,8 @@ import {
   updateProfile
 } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-auth.js";
 import {
-  collection, doc, getDoc, getDocs, getFirestore, limit, onSnapshot, orderBy, query,
-  runTransaction, serverTimestamp, setDoc, updateDoc, where
+  collection, deleteField, doc, getDoc, getDocs, getFirestore, limit, onSnapshot, orderBy, query,
+  runTransaction, serverTimestamp, setDoc, updateDoc, where, writeBatch
 } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js";
 import app from "./firebase.js";
 import { exampleProductTemplates } from "./catalog-seed.js";
@@ -178,7 +178,9 @@ let analyticsFrom = firstDayOfMonth.toLocaleDateString('sv-SE');
 let analyticsTo = currentDay.toLocaleDateString('sv-SE');
 let categoriesFromFirestore = [];
 let catalogLoaded = false;
-let productUnsubscribe = null, categoryUnsubscribe = null, orderUnsubscribe = null, customerUnsubscribe = null, messageUnsubscribe = null;
+let productUnsubscribe = null, productCostUnsubscribe = null, categoryUnsubscribe = null, orderUnsubscribe = null, customerUnsubscribe = null, messageUnsubscribe = null;
+let productCosts = new Map();
+let migratingLegacyProductCosts = false;
 let cloudinaryWorkerUrl = '';
 let savingReservation = false;
 let importingExamples = false;
@@ -192,6 +194,17 @@ const productCents = p => Math.round(Number(p.price || 0) * (100 - Math.max(0, M
 const displayTotal = order => order?.status==='Concluído'&&Number.isFinite(Number(order.saleTotalCents))?Number(order.saleTotalCents)/100:Number.isFinite(Number(order.totalCents))?Number(order.totalCents)/100:Number(order.total||0);
 const isCloudinaryUrl = value => typeof value === 'string' && /^https:\/\/res\.cloudinary\.com\/[a-z0-9_-]+\/image\/upload\//i.test(value);
 const isCloudinaryPublicId = value => typeof value === 'string' && /^graca\/products\/[a-z0-9_-]{20,60}$/i.test(value);
+const cloudinaryDeliveryUrl = (value,width=900) => {
+  if (!isCloudinaryUrl(value)) return '';
+  const marker='/image/upload/',index=value.indexOf(marker);
+  if(index<0)return '';
+  const tail=value.slice(index+marker.length),firstSegment=tail.split('/')[0];
+  // Keep URLs that already have a Cloudinary transformation intact. A version
+  // segment is not a transformation, so the delivery options go before it.
+  if(/(?:^|,)(?:f|q|c|w|h|ar|dpr|g|e|r|b|a|l|bo|o|t)_/.test(firstSegment))return value;
+  const safeWidth=Math.max(100,Math.min(1600,Math.round(Number(width)||900)));
+  return `${value.slice(0,index+marker.length)}f_auto,q_auto,c_limit,w_${safeWidth}/${tail}`;
+};
 const normalizeOrder = (id,data) => ({
   ...data, id, customerName:data.customerName||data.name||'—', phone:data.phone||'',
   totalCents:Number.isFinite(Number(data.totalCents))?Number(data.totalCents):Math.round(Number(data.total||0)*100),
@@ -207,12 +220,24 @@ const friendlyFirestoreError = error => {
 
 function updateCatalogSubscriptions() {
   productUnsubscribe?.();
+  productCostUnsubscribe?.();
   categoryUnsubscribe?.();
+  productCosts = new Map();
   const productQuery = isAdmin
     ? collection(db, 'products')
     : query(collection(db, 'products'), where('active', '==', true));
-  productUnsubscribe = onSnapshot(productQuery, snapshot => {
-    products = snapshot.docs.map(item => ({ ...item.data(), id: item.id }));
+  if (isAdmin) {
+    productCostUnsubscribe = onSnapshot(collection(db, 'productCosts'), snapshot => {
+      productCosts = new Map(snapshot.docs.map(item => [item.id, item.data()]));
+      if ($('#adminContent') && ['products','analytics'].includes(adminTab)) renderAdminContent();
+    }, error => console.error('Falha ao sincronizar custos privados dos produtos:', error));
+  }
+  productUnsubscribe = onSnapshot(productQuery, async snapshot => {
+    if (isAdmin) await migrateLegacyProductCosts(snapshot);
+    products = snapshot.docs.map(item => {
+      const { cost: _legacyPrivateCost, ...publicData } = item.data();
+      return { ...publicData, id: item.id };
+    });
     catalogLoaded = true;
     renderProducts();
     renderCart();
@@ -230,6 +255,35 @@ function updateCatalogSubscriptions() {
     categoriesFromFirestore = snapshot.docs.map(item => item.data()).filter(item => item.active !== false).map(item => item.name).filter(Boolean);
     renderProducts();
   }, error => console.warn('Categorias não foram carregadas:', error));
+}
+
+async function migrateLegacyProductCosts(snapshot) {
+  if (migratingLegacyProductCosts) return;
+  const legacy = snapshot.docs.filter(item => Object.prototype.hasOwnProperty.call(item.data(), 'cost'));
+  if (!legacy.length) return;
+  migratingLegacyProductCosts = true;
+  let migrated = 0;
+  try {
+    for (const item of legacy) {
+      const productRef = doc(db, 'products', item.id), costRef = doc(db, 'productCosts', item.id);
+      await runTransaction(db, async transaction => {
+        const [currentProduct, currentCost] = await Promise.all([transaction.get(productRef), transaction.get(costRef)]);
+        if (!currentProduct.exists() || !Object.prototype.hasOwnProperty.call(currentProduct.data(), 'cost')) return;
+        if (!currentCost.exists()) {
+          const value = currentProduct.data().cost;
+          transaction.set(costRef, { cost: value == null ? null : Number(value), updatedAt: serverTimestamp() });
+        }
+        transaction.update(productRef, { cost: deleteField(), updatedAt: serverTimestamp() });
+        migrated++;
+      });
+    }
+    if (migrated) console.info(`Custos privados migrados para ${migrated} produto(s).`);
+  } catch (error) {
+    console.error('Falha ao proteger os custos antigos dos produtos:', error);
+    toast('Não foi possível migrar todos os custos antigos. Confira as regras do Firebase e abra Produtos novamente.');
+  } finally {
+    migratingLegacyProductCosts = false;
+  }
 }
 
 function subscribeUserData(user) {
@@ -290,7 +344,7 @@ renderProducts = function() {
   if (sort === 'price-desc') list.sort((a,b) => productCents(b)-productCents(a));
   if (sort === 'name') list.sort((a,b) => String(a.name).localeCompare(String(b.name),'pt-BR'));
   if (sort === 'featured') list.sort((a,b) => Number(b.featured)-Number(a.featured));
-  const card = (p,i) => {const photo=isCloudinaryUrl(p.imageUrl)?p.imageUrl:'';return `<article class="product-card" data-product="${htm(p.id)}"><div class="product-visual ${htm(p.color||'pink')}${photo?' has-photo':''}" data-mark="${htm(p.mark||'GRAÇA')}">${photo?`<img class="product-photo" src="${htm(photo)}" alt="${htm(p.name)}" loading="lazy">`:''}<span class="product-index">GMC / ${String(i+1).padStart(2,'0')}</span><button class="quick-add" data-add="${htm(p.id)}" aria-label="Escolher ${htm(p.name)}">+</button></div><div class="product-info"><div><h4>${htm(p.name)}</h4><p>${htm(String(p.category||'').toUpperCase())}</p></div><span class="product-price">${Number(p.discount||0)?`<del>${money(Number(p.price))}</del> `:''}<b>${money(productCents(p)/100)}</b></span></div></article>`;};
+  const card = (p,i) => {const photo=cloudinaryDeliveryUrl(p.imageUrl,700);return `<article class="product-card" data-product="${htm(p.id)}"><div class="product-visual ${htm(p.color||'pink')}${photo?' has-photo':''}" data-mark="${htm(p.mark||'GRAÇA')}">${photo?`<img class="product-photo" src="${htm(photo)}" alt="${htm(p.name)}" loading="lazy">`:''}<span class="product-index">GMC / ${String(i+1).padStart(2,'0')}</span><button class="quick-add" data-add="${htm(p.id)}" aria-label="Escolher ${htm(p.name)}">+</button></div><div class="product-info"><div><h4>${htm(p.name)}</h4><p>${htm(String(p.category||'').toUpperCase())}</p></div><span class="product-price">${Number(p.discount||0)?`<del>${money(Number(p.price))}</del> `:''}<b>${money(productCents(p)/100)}</b></span></div></article>`;};
   const empty = catalogLoaded ? '<div class="empty-state">O CATÁLOGO ESTÁ SENDO PREPARADO PELA GRAÇA.</div>' : '<div class="empty-state">CARREGANDO A COLEÇÃO…</div>';
   $('#productGrid').innerHTML = list.length ? list.map(card).join('') : empty;
   const categoriesList = ['Todas', ...new Set([...categoriesFromFirestore, ...activeProducts().map(p => p.category).filter(Boolean)])];
@@ -305,7 +359,7 @@ openProduct = function(id) {
   const p = products.find(item => String(item.id) === String(id) && item.active !== false);
   if (!p) return toast('Este produto não está disponível.');
   selectedSize = p.sizes?.[0] || 'Único';
-  const photo=isCloudinaryUrl(p.imageUrl)?p.imageUrl:'';
+  const photo=cloudinaryDeliveryUrl(p.imageUrl,1000);
   openModal(`<div class="product-detail"><div class="detail-art ${htm(p.color||'pink')}">${photo?`<img class="detail-photo" src="${htm(photo)}" alt="${htm(p.name)}">`:htm(p.mark||'GRAÇA')}</div><div><div class="section-kicker">GRAÇA / PEÇA</div><h2 id="modalTitle">${htm(p.name)}</h2><strong>${money(productCents(p)/100)}</strong><p>${htm(p.description||'')}</p><p class="fine-print">ESTOQUE INFORMADO: ${Number(p.stock||0)} UNIDADES · DISPONIBILIDADE SERÁ CONFIRMADA PELA LOJA</p><label class="fine-print" for="sizeChoice">ESCOLHA UMA VARIAÇÃO</label><div class="size-options" id="sizeChoice">${(p.sizes?.length?p.sizes:['Único']).map(size=>`<button type="button" data-size="${htm(size)}" class="${size===selectedSize?'selected':''}">${htm(size)}</button>`).join('')}</div><button class="pill-button dark" id="detailAdd" ${Number(p.stock||0)<1?'disabled':''}>ADICIONAR AO CARRINHO ↗</button></div></div>`);
   $$('[data-size]').forEach(button => button.onclick = () => { selectedSize=button.dataset.size; $$('[data-size]').forEach(item=>item.classList.toggle('selected',item===button)); });
   $('#detailAdd').onclick = () => { addToCart(p.id,selectedSize); closeModal(); openCart(); };
@@ -323,7 +377,7 @@ renderCart = function() {
   $('#cartCount').textContent = cart.reduce((sum,item)=>sum+Number(item.qty||0),0);
   $('#cartItems').innerHTML = cart.length ? cart.map((item,index) => {
     const p=products.find(product=>String(product.id)===String(item.id));
-    return `<div class="cart-line"><div class="cart-thumb">${isCloudinaryUrl(p?.imageUrl)?`<img src="${htm(p.imageUrl)}" alt="">`:htm(p?.mark||'✳')}</div><div><h4>${htm(p?.name||'Produto indisponível')}</h4><small>${htm(item.size)} · ${p?money(productCents(p)/100):'Atualize a coleção'}</small><div class="qty-controls"><button data-q="${index}" data-delta="-1" aria-label="Diminuir quantidade">−</button>${Number(item.qty)}<button data-q="${index}" data-delta="1" aria-label="Aumentar quantidade">+</button></div></div><button data-rm="${index}" aria-label="Remover item">×</button></div>`;
+    return `<div class="cart-line"><div class="cart-thumb">${cloudinaryDeliveryUrl(p?.imageUrl,180)?`<img src="${htm(cloudinaryDeliveryUrl(p.imageUrl,180))}" alt="" loading="lazy">`:htm(p?.mark||'✳')}</div><div><h4>${htm(p?.name||'Produto indisponível')}</h4><small>${htm(item.size)} · ${p?money(productCents(p)/100):'Atualize a coleção'}</small><div class="qty-controls"><button data-q="${index}" data-delta="-1" aria-label="Diminuir quantidade">−</button>${Number(item.qty)}<button data-q="${index}" data-delta="1" aria-label="Aumentar quantidade">+</button></div></div><button data-rm="${index}" aria-label="Remover item">×</button></div>`;
   }).join('') : '<div class="empty-state">SEU CARRINHO ESTÁ VAZIO.</div>';
   const validCart = cart.every(item=>products.some(p=>String(p.id)===String(item.id)&&p.active!==false));
   const total = cart.reduce((sum,item)=>{const p=products.find(product=>String(product.id)===String(item.id));return sum+(p?productCents(p)*Number(item.qty||0):0);},0);
@@ -383,7 +437,11 @@ checkout = function() {
         savedOrder=existing.data();
         const savedFingerprint=JSON.stringify((savedOrder.items||[]).map(item=>[item.productId,item.size,item.quantity,item.unitPriceCents]));
         if(savedOrder.uid!==user.uid||savedOrder.confirmationCode!==confirmationCode||savedFingerprint!==cartFingerprint)throw new Error('Não foi possível confirmar esta solicitação. Mantenha o carrinho e tente novamente.');
-      }else await setDoc(reference,order);
+      }else{
+        const limitRef=doc(db,'reservationLimits',user.uid),limitSnapshot=await getDoc(limitRef);
+        if(limitSnapshot.exists()&&Date.now()-safeDate(limitSnapshot.data().lastSubmittedAt).getTime()<30000)throw new Error('Aguarde 30 segundos antes de enviar outra solicitação.');
+        const batch=writeBatch(db);batch.set(reference,order);batch.set(limitRef,{uid:user.uid,lastSubmittedAt:serverTimestamp()});await batch.commit();
+      }
       cart=[];cartCoupon='';set('cart',cart);set('cartCoupon','');renderCart();
       localStorage.removeItem('graca_pendingReservation');
       closeModal();
@@ -522,12 +580,11 @@ async function changeReservationStatus(orderId,nextStatus) {
 
 function renderAdminProducts() {
   const transferableLegacyProducts=migrationCandidates.filter(product=>isCloudinaryUrl(product.imageUrl)&&isCloudinaryPublicId(product.imagePublicId));
-  const rows=products.map(product=>`<tr><td>${isCloudinaryUrl(product.imageUrl)?`<img class="admin-product-photo" src="${htm(product.imageUrl)}" alt="${htm(product.name)}">`:''}${htm(product.name)}</td><td>${htm(product.category||'')}</td><td>${money(productCents(product)/100)}</td><td>${Number(product.stock||0)}</td><td>${product.seededExample?'EXEMPLO · REVISAR':product.active===false?'RASCUNHO':'ATIVO'}</td><td><button class="mini-button" data-product-edit="${htm(product.id)}">EDITAR</button></td></tr>`).join('');
-  $('#adminContent').innerHTML=`<div class="section-kicker">CATÁLOGO / FIRESTORE</div><h2>PRODUTOS</h2><div class="admin-toolbar"><span>${products.length} produtos no Firestore</span><div><button id="cloudinarySetup" class="mini-button">CONFIGURAR UPLOAD</button> <button id="newProduct" class="mini-button primary">+ NOVO PRODUTO</button></div></div><p class="fine-print">Cada produto precisa de uma foto segura enviada ao Cloudinary. Os dados e as imagens de exemplo são rascunhos; revise o estoque e os preços antes de publicar. Produtos e pedidos não podem ser apagados pelo painel.</p><div class="admin-toolbar"><button id="importExampleProducts" class="mini-button">IMPORTAR FOTOS DA PASTA</button><input id="exampleProductFolder" type="file" accept="image/jpeg,image/png,image/webp" webkitdirectory directory multiple hidden></div>${transferableLegacyProducts.length?'<button id="importLegacyProducts" class="mini-button">IMPORTAR CATÁLOGO DESTE NAVEGADOR</button>':''}${rows?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>PRODUTO</th><th>CATEGORIA</th><th>PREÇO</th><th>ESTOQUE</th><th>STATUS</th><th>AÇÃO</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty-state">NENHUM PRODUTO CADASTRADO NO FIRESTORE.</div>'}<div id="cloudinaryEndpointStatus" class="fine-print"></div>`;
+  const rows=products.map(product=>`<tr><td>${cloudinaryDeliveryUrl(product.imageUrl,180)?`<img class="admin-product-photo" src="${htm(cloudinaryDeliveryUrl(product.imageUrl,180))}" alt="${htm(product.name)}" loading="lazy">`:''}${htm(product.name)}</td><td>${htm(product.category||'')}</td><td>${money(productCents(product)/100)}</td><td>${Number(product.stock||0)}</td><td>${product.seededExample?'EXEMPLO · REVISAR':product.active===false?'RASCUNHO':'ATIVO'}</td><td><button class="mini-button" data-product-edit="${htm(product.id)}">EDITAR</button></td></tr>`).join('');
+  $('#adminContent').innerHTML=`<div class="section-kicker">CATÁLOGO / FIRESTORE</div><h2>PRODUTOS</h2><div class="admin-toolbar"><span>${products.length} produtos no Firestore</span><div><button id="cloudinarySetup" class="mini-button">CONFIGURAR UPLOAD</button> <button id="newProduct" class="mini-button primary">+ NOVO PRODUTO</button></div></div><p class="fine-print">Cada produto precisa de uma foto segura enviada ao Cloudinary. Os dados e as imagens de exemplo são rascunhos; revise o estoque e os preços antes de publicar. Produtos e pedidos não podem ser apagados pelo painel.</p><div class="admin-toolbar"><button id="importExampleProducts" class="mini-button">IMPORTAR 6 RASCUNHOS COM FOTOS DO CLOUDINARY</button></div>${transferableLegacyProducts.length?'<button id="importLegacyProducts" class="mini-button">IMPORTAR CATÁLOGO DESTE NAVEGADOR</button>':''}${rows?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>PRODUTO</th><th>CATEGORIA</th><th>PREÇO</th><th>ESTOQUE</th><th>STATUS</th><th>AÇÃO</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty-state">NENHUM PRODUTO CADASTRADO NO FIRESTORE.</div>'}<div id="cloudinaryEndpointStatus" class="fine-print"></div>`;
   $('#newProduct').onclick=()=>productEditor();
   $('#cloudinarySetup').onclick=configureCloudinaryWorker;
-  $('#importExampleProducts').onclick=()=>$('#exampleProductFolder').click();
-  $('#exampleProductFolder').onchange=async event=>{const files=[...(event.currentTarget.files||[])];event.currentTarget.value='';await importExampleProducts(files);};
+  $('#importExampleProducts').onclick=()=>importExampleProducts();
   $$('[data-product-edit]').forEach(button=>button.onclick=()=>productEditor(button.dataset.productEdit));
   $('#importLegacyProducts')?.addEventListener('click',async()=>{
     const names=transferableLegacyProducts.map(product=>product.name).join('\n');
@@ -551,29 +608,27 @@ async function uploadProductPhoto(file) {
   return {imageUrl:result.secure_url,imagePublicId:result.public_id};
 }
 
-async function importExampleProducts(files) {
+async function importExampleProducts() {
   if(!isAdmin)return toast('Somente uma conta autorizada pode importar produtos.');
   if(importingExamples)return toast('Uma importação já está em andamento.');
-  const fileByName=new Map(files.map(file=>[file.name,file]));
-  const missing=exampleProductTemplates.filter(item=>!fileByName.has(item.filename));
+  const missing=exampleProductTemplates.filter(item=>!isCloudinaryUrl(item.imageUrl)||!isCloudinaryPublicId(item.imagePublicId));
   const existing=[];
   for(const item of exampleProductTemplates){const snapshot=await getDoc(doc(db,'products',item.id));if(snapshot.exists())existing.push(item.name);}
-  const toImport=exampleProductTemplates.filter(item=>fileByName.has(item.filename)&&!existing.includes(item.name));
-  if(missing.length)toast(`A pasta não trouxe ${missing.length} foto(s) esperada(s); vou considerar somente as fotos de produto reconhecidas.`);
-  if(!toImport.length)return toast(existing.length?'Os produtos de exemplo já existem.':'Nenhuma foto de produto reconhecida na pasta selecionada.');
+  const toImport=exampleProductTemplates.filter(item=>isCloudinaryUrl(item.imageUrl)&&isCloudinaryPublicId(item.imagePublicId)&&!existing.includes(item.name));
+  if(missing.length)return toast(`${missing.length} imagem(ns) de exemplo ainda não têm URL segura no Cloudinary.`);
+  if(!toImport.length)return toast(existing.length?'Os produtos de exemplo já existem.':'Não há imagens Cloudinary válidas para importar.');
   const preview=toImport.map(item=>`• ${item.name}`).join('\n');
-  if(!confirm(`Importar ${toImport.length} produto(s) como rascunho?\n\n${preview}\n\nAs imagens serão enviadas ao Cloudinary. Preços estimados aleatórios e estoque de 5 a 50 unidades serão gerados. Os itens ficarão ocultos até você revisar e publicar. Artes da marca e campanha serão ignoradas.`))return;
+  if(!confirm(`Importar ${toImport.length} produto(s) como rascunho?\n\n${preview}\n\nAs fotos já estão no Cloudinary. Preços estimados aleatórios e estoque de 5 a 50 unidades serão gerados. Os itens ficarão ocultos até você revisar e publicar.`))return;
   if(importingExamples)return toast('Uma importação já está em andamento.');
   let created=0;importingExamples=true;
   try{
     for(const item of toImport){
-      const file=fileByName.get(item.filename);
-      const image=await uploadProductPhoto(file);
+      const image={imageUrl:item.imageUrl,imagePublicId:item.imagePublicId};
       const steps=Math.floor((item.priceMaxCents-item.priceMinCents)/500);
       const priceCents=item.priceMinCents+Math.floor(Math.random()*(steps+1))*500;
       const stock=Math.floor(Math.random()*46)+5;
       const product={
-        name:item.name,category:item.category,price:priceCents/100,cost:null,discount:0,stock,
+        name:item.name,category:item.category,price:priceCents/100,discount:0,stock,
         sizes:item.sizes,active:false,featured:false,description:item.description,
         imageUrl:image.imageUrl,imagePublicId:image.imagePublicId,color:item.color,mark:item.mark,
         seededExample:true,createdAt:serverTimestamp(),updatedAt:serverTimestamp()
@@ -616,11 +671,13 @@ async function configureCloudinaryWorker() {
 
 productEditor = async function(id='') {
   const existing=products.find(item=>String(item.id)===String(id));
-  const p=existing||{name:'',category:'',price:'',cost:'',discount:0,stock:0,sizes:['Único'],color:'pink',mark:'GRAÇA',description:'',featured:false,active:true,imageUrl:'',imagePublicId:''};
+  const p=existing||{name:'',category:'',price:'',discount:0,stock:0,sizes:['Único'],color:'pink',mark:'GRAÇA',description:'',featured:false,active:true,imageUrl:'',imagePublicId:''};
+  const savedCost=id?await getDoc(doc(db,'productCosts',String(id))).catch(()=>null):null;
+  const privateCost=savedCost?.exists()?savedCost.data().cost:productCosts.get(String(id))?.cost;
   let imageUrl=isCloudinaryUrl(p.imageUrl)?p.imageUrl:'', imagePublicId=isCloudinaryPublicId(p.imagePublicId)?p.imagePublicId:'', previewUrl='';
   const setting=await getDoc(doc(db,'settings','cloudinary')).catch(()=>null);
   cloudinaryWorkerUrl=setting?.exists()?setting.data().workerUrl||'':'';
-  openModal(`<div class="section-kicker">CATÁLOGO / ${id?'EDITAR':'NOVO'}</div><h2 id="modalTitle">${id?'EDITAR PRODUTO':'CADASTRAR PRODUTO'}.</h2>${p.seededExample?'<p class="seed-review-note">Este é um exemplo: confirme nome, preço, estoque e variações antes de publicar.</p>':''}<form id="productForm" class="modal-form"><label>NOME<input name="name" maxlength="160" required value="${htm(p.name)}"></label><label>CATEGORIA<input name="category" maxlength="80" required value="${htm(p.category)}"></label><div class="modal-grid"><label>PREÇO<input name="price" type="number" min="0.01" max="100000" step=".01" required value="${htm(p.price)}"></label><label>CUSTO (OPCIONAL)<input name="cost" type="number" min="0" step=".01" value="${htm(p.cost??'')}"></label></div><div class="modal-grid"><label>DESCONTO (%)<input name="discount" type="number" min="0" max="100" value="${htm(p.discount||0)}"></label><label>ESTOQUE<input name="stock" type="number" min="0" max="100000" step="1" required value="${htm(p.stock||0)}"></label></div><label>TAMANHOS / VARIAÇÕES (SEPARADOS POR VÍRGULA)<input name="sizes" required value="${htm((p.sizes||[]).join(', '))}"></label><label>DESCRIÇÃO<textarea name="description" maxlength="1200">${htm(p.description||'')}</textarea></label><label><input name="featured" type="checkbox" ${p.featured?'checked':''}> Exibir na curadoria em destaque</label><label><input name="active" type="checkbox" ${p.active!==false?'checked':''}> Publicado no catálogo</label><div class="upload-preview">${imageUrl?`<img id="productPhotoPreview" src="${htm(imageUrl)}" alt="Prévia da foto">`:'<div id="productPhotoPreview" class="empty-state">SEM FOTO</div>'}</div><label>ESCOLHER FOTO NO CELULAR OU COMPUTADOR<input id="photoFile" type="file" accept="image/jpeg,image/png,image/webp"></label><div class="admin-toolbar"><button id="uploadPhoto" class="mini-button" type="button">ENVIAR FOTO</button><button id="removePhoto" class="mini-button" type="button">REMOVER FOTO</button></div><p class="fine-print">Envio limitado a JPEG, PNG ou WebP até 5 MB. O segredo do Cloudinary fica somente no Worker.</p><button class="pill-button dark" id="saveProduct">SALVAR PRODUTO</button></form>`);
+  openModal(`<div class="section-kicker">CATÁLOGO / ${id?'EDITAR':'NOVO'}</div><h2 id="modalTitle">${id?'EDITAR PRODUTO':'CADASTRAR PRODUTO'}.</h2>${p.seededExample?'<p class="seed-review-note">Este é um exemplo: confirme nome, preço, estoque e variações antes de publicar.</p>':''}<form id="productForm" class="modal-form"><label>NOME<input name="name" maxlength="160" required value="${htm(p.name)}"></label><label>CATEGORIA<input name="category" maxlength="80" required value="${htm(p.category)}"></label><div class="modal-grid"><label>PREÇO<input name="price" type="number" min="0.01" max="100000" step=".01" required value="${htm(p.price)}"></label><label>CUSTO (OPCIONAL)<input name="cost" type="number" min="0" step=".01" value="${htm(privateCost??'')}"></label></div><div class="modal-grid"><label>DESCONTO (%)<input name="discount" type="number" min="0" max="100" value="${htm(p.discount||0)}"></label><label>ESTOQUE<input name="stock" type="number" min="0" max="100000" step="1" required value="${htm(p.stock||0)}"></label></div><label>TAMANHOS / VARIAÇÕES (SEPARADOS POR VÍRGULA)<input name="sizes" required value="${htm((p.sizes||[]).join(', '))}"></label><label>DESCRIÇÃO<textarea name="description" maxlength="1200">${htm(p.description||'')}</textarea></label><label><input name="featured" type="checkbox" ${p.featured?'checked':''}> Exibir na curadoria em destaque</label><label><input name="active" type="checkbox" ${p.active!==false?'checked':''}> Publicado no catálogo</label><div class="upload-preview">${imageUrl?`<img id="productPhotoPreview" src="${htm(imageUrl)}" alt="Prévia da foto">`:'<div id="productPhotoPreview" class="empty-state">SEM FOTO</div>'}</div><label>ESCOLHER FOTO NO CELULAR OU COMPUTADOR<input id="photoFile" type="file" accept="image/jpeg,image/png,image/webp"></label><div class="admin-toolbar"><button id="uploadPhoto" class="mini-button" type="button">ENVIAR FOTO</button><button id="removePhoto" class="mini-button" type="button">REMOVER FOTO</button></div><p class="fine-print">Envio limitado a JPEG, PNG ou WebP até 5 MB. O segredo do Cloudinary fica somente no Worker.</p><button class="pill-button dark" id="saveProduct">SALVAR PRODUTO</button></form>`);
   const fileInput=$('#photoFile'), uploadButton=$('#uploadPhoto'), saveButton=$('#saveProduct');
   fileInput.onchange=()=>{const file=fileInput.files?.[0];if(!file)return;if(!['image/jpeg','image/png','image/webp'].includes(file.type)||file.size>5*1024*1024){fileInput.value='';return toast('Escolha JPEG, PNG ou WebP de até 5 MB.');}if(previewUrl)URL.revokeObjectURL(previewUrl);previewUrl=URL.createObjectURL(file);$('#productPhotoPreview').outerHTML=`<img id="productPhotoPreview" src="${previewUrl}" alt="Prévia da foto selecionada">`;};
   $('#removePhoto').onclick=()=>{imageUrl='';imagePublicId='';if(previewUrl)URL.revokeObjectURL(previewUrl);$('#productPhotoPreview').outerHTML='<div id="productPhotoPreview" class="empty-state">SEM FOTO</div>';fileInput.value='';};
@@ -638,14 +695,87 @@ productEditor = async function(id='') {
     saveButton.disabled=true;saveButton.textContent='SALVANDO…';
     try{
       const ref=id?doc(db,'products',id):doc(collection(db,'products'));
-      const product={name,category,price,cost:form.get('cost')===''?null:Number(form.get('cost')),discount:Number(form.get('discount')||0),stock,sizes,description:String(form.get('description')||'').trim(),featured:form.get('featured')==='on',active:form.get('active')==='on',imageUrl,imagePublicId,color:p.color||'pink',mark:p.mark||'GRAÇA',updatedAt:serverTimestamp()};
-      await setDoc(ref,product,{merge:true});await saveCategory(category);closeModal();toast('Produto salvo no Firestore.');
+      const product={name,category,price,discount:Number(form.get('discount')||0),stock,sizes,description:String(form.get('description')||'').trim(),featured:form.get('featured')==='on',active:form.get('active')==='on',imageUrl,imagePublicId,color:p.color||'pink',mark:p.mark||'GRAÇA',updatedAt:serverTimestamp()};
+      const costValue=form.get('cost')===''?null:Number(form.get('cost'));
+      await runTransaction(db,async transaction=>{
+        transaction.set(ref,{...product,cost:deleteField()},{merge:true});
+        transaction.set(doc(db,'productCosts',ref.id),{cost:costValue,updatedAt:serverTimestamp()},{merge:true});
+      });
+      await saveCategory(category);closeModal();toast('Produto salvo. O custo foi separado no registro privado da equipe.');
     }catch(error){console.error(error);toast(friendlyFirestoreError(error));saveButton.disabled=false;saveButton.textContent='SALVAR PRODUTO';}
   };
 };
 
+function offerEditor(kind) {
+  const coupon = kind === 'coupon';
+  const title = coupon ? 'NOVO CUPOM' : 'NOVA CAMPANHA';
+  const eyebrow = coupon ? 'BENEFÍCIO / CÓDIGO PROMOCIONAL' : 'COMUNIDADE / CAMPANHA';
+  openModal(`<div class="offer-editor">
+    <header class="offer-editor-banner ${coupon?'coupon':'campaign'}">
+      <span class="section-kicker">GRAÇA / ${htm(eyebrow)}</span><span class="offer-editor-index">01 — 02</span>
+      <h2 id="modalTitle">${title}.</h2><p>${coupon?'Defina um código simples e o percentual de desconto.':'Conte a ideia da campanha e suas condições de participação.'}</p>
+    </header>
+    <div class="offer-editor-layout">
+      <form id="offerEditorForm" class="modal-form offer-editor-form">
+        ${coupon?`<label>CÓDIGO DO CUPOM<input name="code" maxlength="30" pattern="[A-Za-z0-9_-]{3,30}" autocomplete="off" placeholder="Ex.: GRACA10" required><small>Use de 3 a 30 letras, números, hífen ou sublinhado.</small></label>
+          <label>DESCONTO (%)<input name="value" type="number" min="1" max="100" step="1" value="10" required></label>`:
+          `<label>TÍTULO DA CAMPANHA<input name="title" maxlength="120" placeholder="Ex.: Semana da Comunidade" required></label>
+          <label>DESCRIÇÃO E CONDIÇÕES<textarea name="description" rows="5" maxlength="500" placeholder="Explique o período, as peças e as condições da campanha." required></textarea><small>Até 500 caracteres.</small></label>`}
+        <label>VISIBILIDADE<select name="status"><option value="draft">Salvar como rascunho</option><option value="published">Publicar agora para clientes VIP</option></select></label>
+        <button class="pill-button dark" id="saveOffer">SALVAR ${coupon?'CUPOM':'CAMPANHA'} ↗</button>
+      </form>
+      <aside class="offer-preview-panel" aria-live="polite"><span class="section-kicker">PRÉVIA PARA CLIENTES VIP</span>
+        <article class="vip-offer offer-preview-card"><span class="offer-preview-kind">${coupon?'CUPOM':'CAMPANHA'}</span>
+          <h3 id="offerPreviewTitle">${coupon?'SEU CÓDIGO':'Nome da campanha'}</h3>
+          <p id="offerPreviewDescription">${coupon?'10% de desconto. Confira as condições com a equipe.':'A descrição e as condições aparecem aqui.'}</p>
+          ${coupon?'<strong id="offerPreviewCode" class="offer-code">GRACA10</strong>':''}
+          <span id="offerPreviewStatus" class="offer-preview-status">RASCUNHO</span>
+        </article>
+        <p class="fine-print">Somente itens publicados aparecem na área VIP. Você pode alterar a visibilidade depois.</p>
+      </aside>
+    </div>
+  </div>`);
+  const form=$('#offerEditorForm'), code=form.elements.code, value=form.elements.value, campaignTitle=form.elements.title, description=form.elements.description;
+  const refresh=()=>{
+    if(coupon){
+      const normalized=String(code.value||'').toUpperCase();
+      $('#offerPreviewTitle').textContent=normalized||'SEU CÓDIGO';
+      $('#offerPreviewCode').textContent=normalized||'GRACA10';
+      $('#offerPreviewDescription').textContent=`${Number(value.value)||10}% de desconto. Confira as condições com a equipe.`;
+    } else {
+      $('#offerPreviewTitle').textContent=String(campaignTitle.value||'').trim()||'Nome da campanha';
+      $('#offerPreviewDescription').textContent=String(description.value||'').trim()||'A descrição e as condições aparecem aqui.';
+    }
+    $('#offerPreviewStatus').textContent=form.elements.status.value==='published'?'PUBLICADO':'RASCUNHO';
+  };
+  form.addEventListener('input',refresh);
+  form.elements.status.addEventListener('change',refresh);
+  if(coupon)code.addEventListener('input',()=>{code.value=code.value.toUpperCase().replace(/[^A-Z0-9_-]/g,'');refresh();});
+  form.onsubmit=async event=>{
+    event.preventDefault();
+    const save=$('#saveOffer'), status=form.elements.status.value;
+    save.disabled=true;save.textContent='SALVANDO…';
+    try{
+      if(coupon){
+        const normalized=String(code.value||'').trim().toUpperCase(), percentage=Number(value.value);
+        if(!/^[A-Z0-9_-]{3,30}$/.test(normalized)||!Number.isInteger(percentage)||percentage<1||percentage>100)throw new Error('Confira o código e o desconto de 1 a 100%.');
+        const reference=doc(db,'coupons',normalized);
+        if((await getDoc(reference)).exists())throw new Error('Já existe um cupom com esse código. Escolha outro.');
+        await setDoc(reference,{code:normalized,value:percentage,status,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
+      } else {
+        const campaignName=String(campaignTitle.value||'').trim(), campaignDescription=String(description.value||'').trim();
+        if(!campaignName||campaignName.length>120||campaignDescription.length<1||campaignDescription.length>500)throw new Error('Preencha o título e a descrição (até 500 caracteres).');
+        const reference=doc(collection(db,'campaigns'));
+        await setDoc(reference,{title:campaignName,description:campaignDescription,status,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
+      }
+      closeModal();toast(`${coupon?'Cupom':'Campanha'} salva com sucesso.`);if(adminTab==='discounts')renderAdminContent();
+    }catch(error){console.error('Falha ao salvar benefício:',error);toast(friendlyFirestoreError(error));save.disabled=false;save.textContent=`SALVAR ${coupon?'CUPOM':'CAMPANHA'} ↗`;}
+  };
+  refresh();
+}
+
 function renderAdminBenefits() {
-  $('#adminContent').innerHTML='<div class="section-kicker">COMUNIDADE / PUBLICAÇÕES</div><h2>BENEFÍCIOS VIP</h2><p>Cadastre cupons e campanhas. Só itens em estado Publicado aparecem para membros com e-mail confirmado.</p><div class="admin-toolbar"><button id="newVipCoupon" class="mini-button primary">+ NOVO CUPOM</button><button id="newVipCampaign" class="mini-button">+ NOVA CAMPANHA</button></div><h3>CUPONS</h3><div id="adminCoupons" class="empty-state">CARREGANDO…</div><h3>CAMPANHAS</h3><div id="adminCampaigns" class="empty-state">CARREGANDO…</div>';
+  $('#adminContent').innerHTML='<div class="section-kicker">COMUNIDADE / PUBLICAÇÕES</div><h2>BENEFÍCIOS VIP</h2><p>Crie benefícios com uma prévia antes de salvar. Só itens publicados aparecem para membros com e-mail confirmado.</p><div class="admin-toolbar"><button id="newVipCoupon" class="mini-button primary">+ NOVO CUPOM</button><button id="newVipCampaign" class="mini-button">+ NOVA CAMPANHA</button></div><section class="offer-list-panel"><h3>CUPONS</h3><div id="adminCoupons" class="empty-state">CARREGANDO…</div></section><section class="offer-list-panel"><h3>CAMPANHAS</h3><div id="adminCampaigns" class="empty-state">CARREGANDO…</div></section>';
   const load=async()=>{
     try{
       const [couponsSnapshot,campaignsSnapshot]=await Promise.all([getDocs(query(collection(db,'coupons'),limit(100))),getDocs(query(collection(db,'campaigns'),limit(100)))]);
@@ -657,8 +787,8 @@ function renderAdminBenefits() {
       $$('[data-toggle-campaign]').forEach(button=>button.onclick=()=>toggleOffer('campaigns',button.dataset.toggleCampaign,campaigns));
     }catch(error){console.error(error);$('#adminCoupons').textContent='Não foi possível carregar os cupons.';$('#adminCampaigns').textContent='Não foi possível carregar as campanhas.';}
   };
-  $('#newVipCoupon').onclick=async()=>{const code=String(prompt('Código do cupom (ex.: GRACA10)')||'').trim().toUpperCase(),value=Number(prompt('Percentual informado no benefício (1 a 100)'));if(!/^[A-Z0-9_-]{3,30}$/.test(code)||!Number.isInteger(value)||value<1||value>100)return toast('Informe um código e um percentual válidos.');try{await setDoc(doc(db,'coupons',code),{code,value,status:'draft',createdAt:serverTimestamp(),updatedAt:serverTimestamp()});await load();}catch(error){toast(friendlyFirestoreError(error));}};
-  $('#newVipCampaign').onclick=async()=>{const title=String(prompt('Título da campanha')||'').trim(),description=String(prompt('Descrição e condições')||'').trim();if(!title||!description)return toast('Título e descrição são necessários.');try{const ref=doc(collection(db,'campaigns'));await setDoc(ref,{title:title.slice(0,120),description:description.slice(0,500),status:'draft',createdAt:serverTimestamp(),updatedAt:serverTimestamp()});await load();}catch(error){toast(friendlyFirestoreError(error));}};
+  $('#newVipCoupon').onclick=()=>offerEditor('coupon');
+  $('#newVipCampaign').onclick=()=>offerEditor('campaign');
   load();
 }
 
@@ -719,7 +849,8 @@ function renderFinanceAnalytics(el) {
       const current=itemsByProduct.get(key)||{name:item.name||key,quantity:0,revenueCents:0,marginCents:0,costKnown:true};
       current.quantity+=quantity;current.revenueCents+=allocated;
       const product=products.find(candidate=>String(candidate.id)===key);
-      if(product?.cost!==null&&product?.cost!==undefined&&Number.isFinite(Number(product.cost)))current.marginCents+=allocated-Math.round(Number(product.cost)*100)*quantity;
+      const productCost=productCosts.get(key)?.cost;
+      if(productCost!==null&&productCost!==undefined&&Number.isFinite(Number(productCost)))current.marginCents+=allocated-Math.round(Number(productCost)*100)*quantity;
       else current.costKnown=false;
       itemsByProduct.set(key,current);
     });
@@ -766,7 +897,7 @@ $('#contactForm').onsubmit=async event=>{
   event.preventDefault();const form=new FormData(event.currentTarget),name=String(form.get('name')).trim(),email=String(form.get('email')).trim().toLowerCase(),subject=String(form.get('subject')).trim(),message=String(form.get('message')).trim();
   if(name.length<1||name.length>120||!email||message.length<8||message.length>1500)return toast('Confira seu nome, e-mail e mensagem.');
   const button=event.currentTarget.querySelector('button[type="submit"]');button.disabled=true;button.textContent='ENVIANDO…';
-  try{let user=auth.currentUser;if(!user)user=(await signInAnonymously(auth)).user;const reference=doc(collection(db,'messages'));await setDoc(reference,{uid:user.uid,name,email,subject:subject.slice(0,100),message,status:'Nova',createdAt:serverTimestamp(),updatedAt:serverTimestamp()});event.currentTarget.reset();toast('Mensagem recebida pela GRAÇA.');}
+  try{let user=auth.currentUser;if(!user)user=(await signInAnonymously(auth)).user;const limitRef=doc(db,'messageLimits',user.uid),limitSnapshot=await getDoc(limitRef);if(limitSnapshot.exists()&&Date.now()-safeDate(limitSnapshot.data().lastSubmittedAt).getTime()<30000)throw new Error('Aguarde 30 segundos antes de enviar outra mensagem.');const reference=doc(collection(db,'messages')),batch=writeBatch(db);batch.set(reference,{uid:user.uid,name,email,subject:subject.slice(0,100),message,status:'Nova',createdAt:serverTimestamp(),updatedAt:serverTimestamp()});batch.set(limitRef,{uid:user.uid,lastSubmittedAt:serverTimestamp()});await batch.commit();event.currentTarget.reset();toast('Mensagem recebida pela GRAÇA.');}
   catch(error){console.error(error);toast(friendlyFirestoreError(error));}
   finally{button.disabled=false;button.textContent='ENVIAR MENSAGEM ↗';}
 };

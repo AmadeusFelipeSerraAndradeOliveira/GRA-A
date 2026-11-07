@@ -10,8 +10,6 @@ const firebaseConfig = {
   measurementId: "G-LDS9HQ6QD7"
 };
 
-// Firebase web configuration identifies the public client app; private service credentials
-// must stay on trusted server code.
 const app = initializeApp(firebaseConfig);
 
 export default app;

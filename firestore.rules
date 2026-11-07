@@ -1,5 +1,7 @@
 // Assumed data model (Firestore Standard, project graca-454ff):
-// products/{id}: name/category (bounded strings), price/discount/cost (numbers),
+// products/{id}: public catalog fields only; acquisition costs are isolated in
+// productCosts/{id}, readable and writable only by administrators.
+// products/{id}: name/category (bounded strings), price/discount (numbers),
 //   stock/reservedStock (bounded nonnegative integers), sizes (1-20 values),
 //   active/featured/seededExample (booleans), description/color/mark,
 //   Cloudinary imageUrl/imagePublicId, and timestamps. Example imports stay
@@ -41,7 +43,7 @@ service cloud.firestore {
 
     function validProduct(data) {
       return data.keys().hasAll(['name', 'category', 'price', 'stock', 'sizes', 'active', 'imageUrl', 'imagePublicId', 'updatedAt'])
-        && data.keys().hasOnly(['name', 'category', 'price', 'cost', 'discount', 'stock', 'reservedStock', 'sizes', 'active', 'description', 'featured', 'imageUrl', 'imagePublicId', 'color', 'mark', 'seededExample', 'updatedAt', 'createdAt'])
+        && data.keys().hasOnly(['name', 'category', 'price', 'discount', 'stock', 'reservedStock', 'sizes', 'active', 'description', 'featured', 'imageUrl', 'imagePublicId', 'color', 'mark', 'seededExample', 'updatedAt', 'createdAt'])
         && data.name is string && data.name.size() > 0 && data.name.size() <= 160
         && data.category is string && data.category.size() > 0 && data.category.size() <= 80
         && data.price is number && data.price > 0 && data.price <= 100000
@@ -50,7 +52,6 @@ service cloud.firestore {
         && data.sizes is list && data.sizes.size() > 0 && data.sizes.size() <= 20
         && data.active is bool
         && (!('discount' in data) || (data.discount is number && data.discount >= 0 && data.discount <= 100))
-        && (!('cost' in data) || data.cost == null || (data.cost is number && data.cost >= 0))
         && (!('description' in data) || (data.description is string && data.description.size() <= 1200))
         && (!('featured' in data) || data.featured is bool)
         && data.imageUrl is string && data.imageUrl.size() <= 2048
@@ -62,6 +63,13 @@ service cloud.firestore {
         && (!('mark' in data) || (data.mark is string && data.mark.size() <= 80))
         && data.updatedAt is timestamp
         && (!('createdAt' in data) || data.createdAt is timestamp);
+    }
+
+    function validProductCost(data) {
+      return data.keys().hasAll(['cost', 'updatedAt'])
+        && data.keys().hasOnly(['cost', 'updatedAt'])
+        && (data.cost == null || (data.cost is number && data.cost >= 0 && data.cost <= 100000))
+        && data.updatedAt is timestamp;
     }
 
     function validProfileAddress(address) {
@@ -302,6 +310,28 @@ service cloud.firestore {
         && data.uid == request.auth.uid && data.status == 'Nova';
     }
 
+    function validSubmissionCooldown(data, uid) {
+      return data.keys().hasAll(['uid', 'lastSubmittedAt'])
+        && data.keys().hasOnly(['uid', 'lastSubmittedAt'])
+        && data.uid == uid
+        && data.lastSubmittedAt is timestamp
+        && data.lastSubmittedAt == request.time;
+    }
+
+    function reservationCooldownWritten() {
+      let path = /databases/$(database)/documents/reservationLimits/$(request.auth.uid);
+      return signedIn() && existsAfter(path)
+        && getAfter(path).data.uid == request.auth.uid
+        && getAfter(path).data.lastSubmittedAt == request.time;
+    }
+
+    function messageCooldownWritten() {
+      let path = /databases/$(database)/documents/messageLimits/$(request.auth.uid);
+      return signedIn() && existsAfter(path)
+        && getAfter(path).data.uid == request.auth.uid
+        && getAfter(path).data.lastSubmittedAt == request.time;
+    }
+
     function validCloudinarySetting(data) {
       return data.keys().hasAll(['workerUrl', 'updatedAt'])
         && data.keys().hasOnly(['workerUrl', 'updatedAt'])
@@ -372,6 +402,12 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    match /productCosts/{productId} {
+      allow get, list: if isAdmin();
+      allow create, update: if isAdmin() && validProductCost(request.resource.data);
+      allow delete: if false;
+    }
+
     match /categories/{categoryId} {
       allow get, list: if isAdmin() || resource.data.active == true;
       allow create, update: if isAdmin() && validCategory(request.resource.data);
@@ -379,14 +415,29 @@ service cloud.firestore {
     }
 
     match /orders/{orderId} {
-      allow get, list: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
-      allow create: if validReservation(request.resource.data);
+      // O checkout gera primeiro um ID aleatório e consulta esse documento
+      // para tornar uma tentativa repetida idempotente. Permitir somente o
+      // get de documentos ausentes não expõe pedidos existentes de terceiros.
+      allow get: if isAdmin() || (signedIn() && (resource == null || resource.data.uid == request.auth.uid));
+      allow list: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow create: if validReservation(request.resource.data) && reservationCooldownWritten();
       allow update: if isAdmin()
         && validAdminReservation(request.resource.data)
         && validTransition()
         && validStockTransition()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'statusHistory', 'updatedAt', 'stockApplied', 'stockRestored', 'confirmedAt', 'cancelledAt', 'salesChannel', 'paymentMethod', 'saleTotalCents', 'installmentCount', 'installmentValueCents', 'finalInstallmentValueCents', 'closedAt'])
         && request.resource.data.updatedAt is timestamp;
+      allow delete: if false;
+    }
+
+    match /reservationLimits/{uid} {
+      allow get: if signedIn() && request.auth.uid == uid;
+      allow list: if false;
+      allow create: if signedIn() && request.auth.uid == uid
+        && validSubmissionCooldown(request.resource.data, uid);
+      allow update: if signedIn() && request.auth.uid == uid
+        && validSubmissionCooldown(request.resource.data, uid)
+        && request.time >= resource.data.lastSubmittedAt + duration.value(30, 's');
       allow delete: if false;
     }
 
@@ -420,7 +471,7 @@ service cloud.firestore {
 
     match /messages/{messageId} {
       allow get, list: if isAdmin();
-      allow create: if signedIn() && validMessage(request.resource.data);
+      allow create: if signedIn() && validMessage(request.resource.data) && messageCooldownWritten();
       allow update: if isAdmin()
         && validMessageData(request.resource.data)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
@@ -432,6 +483,17 @@ service cloud.firestore {
         && request.resource.data.createdAt == resource.data.createdAt
         && request.resource.data.status in ['Nova', 'Em atendimento', 'Concluída']
         && request.resource.data.updatedAt is timestamp;
+      allow delete: if false;
+    }
+
+    match /messageLimits/{uid} {
+      allow get: if signedIn() && request.auth.uid == uid;
+      allow list: if false;
+      allow create: if signedIn() && request.auth.uid == uid
+        && validSubmissionCooldown(request.resource.data, uid);
+      allow update: if signedIn() && request.auth.uid == uid
+        && validSubmissionCooldown(request.resource.data, uid)
+        && request.time >= resource.data.lastSubmittedAt + duration.value(30, 's');
       allow delete: if false;
     }
 

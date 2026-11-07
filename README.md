@@ -11,7 +11,9 @@ Loja editorial de moda com catálogo no Firestore, carrinho, solicitação de re
 - Reservas de visitante usam Firebase Anonymous Authentication em segundo plano. Isso não mostra tela de cadastro nem pede senha; é necessário habilitar o provedor Anônimo no Firebase.
 - O cadastro por e-mail é opcional. A área VIP exige conta com e-mail confirmado. Cupons e campanhas aparecem somente depois de publicados no painel. O consentimento de marketing é independente e não vem marcado.
 - Cada produto novo ou alterado exige uma foto enviada ao Cloudinary. Um Cloudflare Worker confirma a conta administrativa e assina o envio; somente a `secure_url` e o ID público retornados são gravados no Firestore. O API Secret nunca entra no navegador. Remover a foto limpa a referência, mas não apaga o arquivo antigo no Cloudinary.
-- O painel pode importar as seis fotos de peças identificadas na pasta enviada. A rotina ignora as artes de marca/campanha, sobe as fotos ao Cloudinary e cria produtos ocultos com preços de exemplo aleatórios e estoque entre 5 e 50. A equipe deve revisar os rascunhos antes de publicá-los.
+- A vitrine transforma a URL segura apenas na hora de exibir a imagem, usando `f_auto`, `q_auto` e limite de largura. A URL original retornada por `secure_url` continua sendo a referência salva no Firestore.
+- As seis fotos de produto reconhecidas da pasta enviada foram carregadas na conta Cloudinary conectada. O botão de importação usa as `secure_url` existentes e cria produtos ocultos com preços de exemplo aleatórios e estoque entre 5 e 50; revise os rascunhos antes de publicar.
+- Custos de aquisição são mantidos em `productCosts/{id}`, coleção acessível somente à equipe. Ao abrir o catálogo no painel, o administrador migra os custos antigos para essa coleção e remove esse campo dos documentos públicos dos produtos.
 - Uma solicitação só pode ser encerrada como venda depois de marcada como entregue. O encerramento registra canal, pagamento, valor final e, para crédito parcelado, quantidade e valores exatos das parcelas. Análise Financeira mostra faturamento, ticket médio, vendas por canal/pagamento, produtos mais vendidos e um CSV.
 - Contatos enviados pelo formulário são salvos na coleção privada `messages` para a equipe responder fora da loja. O site não envia mensagens automáticas por WhatsApp.
 
@@ -22,7 +24,7 @@ npm install
 npm run dev
 ```
 
-Abra `http://localhost:5501`. O comando `npm run build` verifica a sintaxe JavaScript e confere se a vitrine deixou de carregar o SDK de pagamento antigo. O projeto é HTML/CSS/JavaScript estático, sem etapa de empacotamento.
+Abra `http://localhost:5501`. `npm run build` verifica a sintaxe JavaScript, sincroniza os arquivos usados pelo Firebase Hosting na pasta `public/` e confere os fluxos principais. O projeto é HTML/CSS/JavaScript estático, sem etapa de empacotamento.
 
 As alterações de interface podem ser vistas sem login. Para reservar, precisa haver produtos ativos no Firestore e o provedor Anônimo habilitado. Não faça uma solicitação de teste no projeto de produção: ela cria um registro persistente. Use o Emulator Suite ou um projeto Firebase de teste para validar gravações.
 
@@ -32,13 +34,15 @@ No projeto `graca-454ff`:
 
 1. Em **Authentication → Sign-in method**, habilite **Anonymous** e **Email/Password**. Para clientes VIP e administradores, mantenha a confirmação de e-mail. Em **Settings → Authorized domains**, autorize os domínios de desenvolvimento e hospedagem, sem incluir portas: `localhost`, `127.0.0.1`, `graca-454ff.web.app` e `graca-454ff.firebaseapp.com`.
 2. Cadastre a conta de administrador em **Authentication** e confirme o e-mail. Em Firestore, crie `admins/{UID}` usando o UID exato da conta, ou defina a custom claim `admin: true` pelo SDK Admin. As regras impedem que o próprio site crie ou remova permissões de administrador.
-3. Revise e publique as regras: `firebase deploy --only firestore:rules --project graca-454ff`.
+3. As regras revisadas foram compiladas e publicadas em `graca-454ff` em 07/11/2026. Para alterações futuras, revise e publique com `firebase deploy --only firestore:rules --project graca-454ff`.
 4. Configure o Worker do Cloudinary e envie uma foto para cada produto. O editor valida a `secure_url` e o identificador Cloudinary, e as regras rejeitam imagens de outros domínios. Para publicar, revise nome, categoria, preço, estoque e variações antes de marcar **Publicado no catálogo**.
 5. Nas coleções `products`, `categories`, `customers`, `orders`, `messages`, `admins`, `coupons`, `campaigns` e `settings`, as regras limitam leitura e escrita por função. Clientes podem ler somente seus próprios pedidos; visitantes não consultam pedidos por código público.
 
-O formulário de contato e as reservas salvam no Firestore diretamente com Firebase Auth. Regras verificam os campos, limites, UID, preço atual e total da reserva. A equipe altera status apenas pelo painel; a confirmação de estoque usa uma transação Firestore para impedir baixa duplicada ou estoque negativo.
+O gerador `@cloudinary/create-cloudinary-service-worker-lab` não foi adicionado como dependência do site: ele só copia arquivos para iniciar um service worker experimental. A loja já armazena imagens no Cloudinary, então as URLs de entrega otimizadas fazem esse trabalho sem interceptar todas as imagens do navegador.
 
-**Limite de custo e abuso:** esta implementação não depende de Cloud Functions, Blaze, Firebase Storage nem gateway. Firebase Spark ainda tem limites de leitura, gravação e tráfego; Auth anônimo também pode ser abusado para gerar solicitações. App Check, limitação de taxa e detecção de spam não estão configurados neste branch. Verifique cotas e proteção contra abuso antes de uma campanha pública.
+O formulário de contato e as reservas salvam no Firestore diretamente com Firebase Auth. Regras verificam os campos, limites, UID, preço atual e total da reserva; cada sessão tem um intervalo mínimo de 30 segundos entre envios do mesmo tipo, imposto por uma gravação em lote e pelas regras. A equipe altera status apenas pelo painel; a confirmação de estoque usa uma transação Firestore para impedir baixa duplicada ou estoque negativo. A integração de pagamentos em Functions, se reativada, lê nome, preço, desconto e disponibilidade na mesma transação que grava a reserva.
+
+**Limite de custo e abuso:** esta implementação não depende de Cloud Functions, Blaze, Firebase Storage nem gateway. Firebase Spark ainda tem limites de leitura, gravação e tráfego. O intervalo de 30 segundos reduz envios repetidos pela mesma sessão, mas uma pessoa pode criar outra sessão anônima; App Check e detecção de spam ainda precisam ser configurados no Console Firebase antes de uma campanha pública.
 
 ### Cotas públicas consultadas em 06/11/2026
 
@@ -65,7 +69,7 @@ O Worker limita requisições aos domínios em `ALLOWED_ORIGINS`. Atualize a lis
 
 1. No painel administrativo, abra **Produtos → Configurar upload** e informe a URL `workers.dev` que termina em `/upload`. Essa URL identifica o Worker; ela não é a chave do Cloudinary.
 2. Para um produto individual, escolha a foto no editor, clique em **Enviar foto**, confira a prévia e salve. Só então o Firestore recebe a URL segura e o identificador devolvidos pelo Cloudinary.
-3. Para os exemplos enviados, clique em **Importar fotos da pasta** e selecione a pasta `produtos graça`. O navegador envia somente as seis imagens listadas em `catalog-seed.js`; logo, arte de campanha e logotipo não entram no estoque.
+3. Para os exemplos enviados, clique em **Importar 6 rascunhos com fotos do Cloudinary**. As seis URLs seguras e os IDs públicos ficam no manifesto `catalog-seed.js`; artes de campanha e logotipos não entram no estoque.
 4. A importação cria rascunhos invisíveis ao público e inventa preço/estoque de demonstração. Abra cada rascunho, confirme os dados reais, tamanhos e variações, mantenha a foto correta e só depois marque **Publicado no catálogo**.
 5. Para trocar uma foto, envie a imagem nova e salve. O produto passa a apontar para a nova `secure_url`; o arquivo anterior permanece na conta Cloudinary até ser removido pelo proprietário no painel Cloudinary.
 
@@ -73,7 +77,7 @@ O Worker limita requisições aos domínios em `ALLOWED_ORIGINS`. Atualize a lis
 
 Produtos que já estavam no Firestore continuam lá e não são apagados. A edição de um produto antigo sem foto Cloudinary exige enviar uma foto antes de salvar. O catálogo salvo neste navegador só pode ser migrado quando seus produtos já têm uma URL Cloudinary válida; a migração os cria como rascunhos. Os pedidos antigos ficam visíveis e os registros não podem ser excluídos pelo painel.
 
-O checkout Mercado Pago, o SDK de cartão/Pix, as rotas de pagamento e Cloud Functions ficam fora do fluxo desta etapa. Não publicar nem executar `firebase deploy --only functions`. A aplicação antiga e os arquivos de integração foram removidos do branch proposto, preservando os registros existentes no Firestore.
+O código das rotas Mercado Pago permanece em `functions/`, mas não foi possível validar nesta rodada que os endpoints estão publicados ou que as credenciais secretas estão configuradas. Pagamentos não foram testados de ponta a ponta; confirme o estado das funções, segredos e webhook no Firebase antes de aceitar pagamentos.
 
 ## Arquivos principais
 
