@@ -1,21 +1,20 @@
 # Revisão das regras do Firestore
 
-## Estrutura e acessos encontrados
+## Controles atuais
 
-- `admins/{uid}`: documento administrativo gerenciado manualmente no Console do Firebase. A existência do documento, ou a custom claim `admin: true`, autoriza o painel. O cliente autenticado pode consultar somente o próprio documento; nenhum cliente pode listar, criar, editar ou excluir documentos dessa coleção.
-- `customers/{uid}`: perfil pertencente ao usuário autenticado, com `uid`, `name`, `email`, `phone`, `address`, `createdAt` e `updatedAt`. O usuário pode ler o próprio perfil, criar um perfil com o próprio UID e alterar apenas nome, telefone, endereço e data de atualização. Exclusão é negada.
-- `products/{productId}`: catálogo público necessário à vitrine. Apenas administrador cria/edita; exclusão é negada. O documento valida nome, preço, estoque, tamanhos, ativo e campos opcionais de desconto, custo e estoque reservado.
-- `orders/{orderId}`: escrita de criação e atualização de pagamento feita pelas Cloud Functions com Admin SDK. O cliente lê apenas seus pedidos; administrador pode alterar status e data de atualização. Exclusão é negada.
-- `coupons/{couponCode}`: consulta e manutenção reservadas a administradores. Criação e atualização validam os campos permitidos; exclusão é negada.
+- Administração requer uma conta autenticada com e-mail verificado e `admin: true` em custom claims ou documento `admins/{uid}` gerenciado pelo proprietário. O cliente não pode editar essa coleção.
+- Produtos e categorias podem ser lidos publicamente somente quando `active == true`; só administradores podem criar ou editar. Produtos exigem URL segura Cloudinary e ID em `graca/products/`. Custos ficam em `productCosts/{id}`, coleção acessível apenas a administradores.
+- A reserva exige autenticação, vínculo com o UID da sessão, até seis combinações, preço conferido com o catálogo, total recalculado e atualização atômica de um limite de 30 segundos por UID. Um pedido pendente não desconta estoque. Só administradores podem avançar estados válidos; exclusão de pedido é negada.
+- Mensagens podem ser enviadas por sessões autenticadas, com limites de tamanho e lote atômico com limite de 30 segundos por UID. A leitura e atualização ficam restritas a administradores; exclusão é negada.
+- Cupons e campanhas em rascunho ficam restritos a administradores. Conteúdo publicado requer conta de membro verificada. Clientes, pedidos, produtos, cupons, campanhas e mensagens não podem ser excluídos pelo cliente.
+- O encerramento financeiro valida canal, forma de pagamento e parcelas que fecham o valor final registrado.
 
-O código do navegador lê `admins/{uid}` com `getDoc` e acompanha `orders/{orderId}` com `onSnapshot`. Catálogo, painel, clientes e relatórios ainda têm dados locais no `localStorage`. As Cloud Functions usam Admin SDK para `products`, `coupons` e `orders`, portanto essas operações de servidor não são limitadas pelas regras do cliente.
+## Validação e limites
 
-## Revisão de caminhos de escalada
-
-- Visitante sem login: catálogo público somente leitura; documentos privados e dados administrativos permanecem bloqueados.
-- Usuário autenticado: pode consultar somente o próprio documento de função e o próprio pedido/perfil; a regra não permite escrever na coleção `admins` nem excluir clientes ou pedidos.
-- Tentativa de autoelevação: gravar `admins/{uid}` pelo navegador falha porque create/update estão negados; a concessão deve vir do Console Firebase ou de processo confiável com Admin SDK.
-- Alterar status de pedido: usuário comum não pode editar pedidos; administrador só pode alterar os campos `status` e `updatedAt` e usar os estados permitidos.
-- Listar `admins`: negado; a tela verifica apenas o documento do UID autenticado.
-
-Esta revisão é estática. A sintaxe e o comportamento final das regras precisam ser validados no Firebase Emulator ou com `firebase deploy --only firestore:rules` antes de considerar o painel disponível no site publicado.
+- O Firebase CLI compilou e publicou estas regras no projeto `graca-454ff` em 07/11/2026.
+- `npm run build` valida a sintaxe e as verificações estáticas dos fluxos; não substitui testes de autorização no Firestore Emulator.
+- Os testes positivos/negativos do Emulator não foram executados porque Java não está disponível nesta máquina. Não foi criada reserva de teste na base de produção.
+- O limite de envio é por UID. Sessões anônimas adicionais podem contorná-lo; App Check/reCAPTCHA e o enforcement ainda precisam de configuração no Console Firebase.
+- Administradores devem confirmar o e-mail antes de acessar dados administrativos. Se categorias e mensagens falharem no painel, confira o estado de verificação da conta e o documento `admins/{uid}`/claim. A coleção `categories` deve estar consultada com `active == true` para usuários públicos.
+- A migração de produtos antigos que ainda tenham `cost` incorporado ocorre quando uma conta administrativa abre a aba Produtos. Verifique se a migração terminou antes de considerar todos os custos ocultos dos documentos públicos.
+- Os relatórios financeiros usam no máximo 250 pedidos carregados e a margem usa o custo atual do produto, sem histórico de custo por venda.

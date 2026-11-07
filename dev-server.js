@@ -5,14 +5,9 @@ const path = require("node:path");
 const root = __dirname;
 const rootPrefix = `${path.resolve(root)}${path.sep}`;
 const port = Number(process.env.PORT || 5501);
-const upstreamOrigin = "https://graca-454ff.web.app";
-const apiPaths = new Set([
-  "/api/mercadopago/config",
-  "/api/mercadopago/order"
-]);
 const blockedRoots = new Set([
   ".git", ".firebase", "node_modules", "functions",
-  "firebase.json", "firestore.rules", ".firebaserc",
+  "firebase.json", "firestore.rules", ".firebaserc", "cloudinary-worker", "scripts",
   ".gitignore", "package.json", "package-lock.json",
   "README.md", "FIRESTORE_RULES_REVIEW.md"
 ]);
@@ -29,50 +24,6 @@ const mimeTypes = {
   ".svg": "image/svg+xml",
   ".webp": "image/webp"
 };
-
-function replyJson(response, status, payload) {
-  response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
-  response.end(JSON.stringify(payload));
-}
-
-async function proxyMarketplaceApi(request, response, requestUrl) {
-  if (!apiPaths.has(requestUrl.pathname)) return replyJson(response, 404, { error: "Rota de desenvolvimento não encontrada." });
-  if (!["GET", "POST", "OPTIONS"].includes(request.method)) return replyJson(response, 405, { error: "Método não permitido." });
-
-  const headers = new Headers();
-  for (const name of ["authorization", "content-type", "accept"]) {
-    const value = request.headers[name];
-    if (value) headers.set(name, value);
-  }
-  let body;
-  if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) {
-    const chunks = [];
-    for await (const chunk of request) chunks.push(chunk);
-    body = Buffer.concat(chunks);
-  }
-
-  try {
-    const upstreamUrl = new URL(`${requestUrl.pathname}${requestUrl.search}`, upstreamOrigin);
-    const upstream = await fetch(upstreamUrl, {
-      method: request.method,
-      headers,
-      body,
-      signal: AbortSignal.timeout(30000)
-    });
-    const responseHeaders = {
-      "Content-Type": upstream.headers.get("content-type") || "application/json; charset=utf-8",
-      "Cache-Control": "no-store"
-    };
-    const cacheControl = upstream.headers.get("cache-control");
-    if (cacheControl) responseHeaders["Cache-Control"] = cacheControl;
-    response.writeHead(upstream.status, responseHeaders);
-    response.end(Buffer.from(await upstream.arrayBuffer()));
-    console.log(`${request.method} ${requestUrl.pathname} -> ${upstream.status}`);
-  } catch (error) {
-    console.error(`Falha no proxy ${requestUrl.pathname}: ${error.message}`);
-    replyJson(response, 502, { error: "Não foi possível alcançar o serviço Firebase." });
-  }
-}
 
 async function serveStatic(request, response, requestUrl) {
   if (!["GET", "HEAD"].includes(request.method)) {
@@ -110,15 +61,14 @@ async function serveStatic(request, response, requestUrl) {
 
 const server = http.createServer(async (request, response) => {
   const requestUrl = new URL(request.url || "/", `http://${request.headers.host || `localhost:${port}`}`);
-  if (requestUrl.pathname.startsWith("/api/mercadopago/")) return proxyMarketplaceApi(request, response, requestUrl);
   return serveStatic(request, response, requestUrl);
 });
 
 server.listen(port, "127.0.0.1", () => {
   console.log(`GRAÇA GMC em http://localhost:${port}`);
-  console.log("As rotas /api/mercadopago são encaminhadas ao Firebase sem chamada CORS do navegador.");
 });
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => server.close(() => process.exit(0)));
 }
+

@@ -1,3 +1,26 @@
+// Assumed data model (Firestore Standard, project graca-454ff):
+// products/{id}: public catalog fields only; acquisition costs are isolated in
+// productCosts/{id}, readable and writable only by administrators.
+// products/{id}: name/category (bounded strings), price/discount (numbers),
+//   stock/reservedStock (bounded nonnegative integers), sizes (1-20 values),
+//   active/featured/seededExample (booleans), description/color/mark,
+//   Cloudinary imageUrl/imagePublicId, and timestamps. Example imports stay
+//   inactive until reviewed; only admins write.
+// categories/{id}: bounded name, active flag, updatedAt. Active names are public;
+//   only admins write.
+// orders/{id}: immutable owner UID/contact/items/price/address/consent/createdAt;
+//   each request has 1-6 item maps with productId/name/size/quantity/unitPriceCents,
+//   a total in cents, delivery method, status history, stock flags, timestamps.
+//   Closing a delivered order records salesChannel, paymentMethod, saleTotalCents,
+//   installmentCount, installmentValueCents, finalInstallmentValueCents, closedAt.
+//   Owner reads own; admins read and transition; no deletes.
+// customers/{uid}: UID/email/name/phone/address/marketingConsent and timestamps.
+//   Owner reads/updates own; admins read; email, UID and createdAt are immutable.
+// admins/{uid}: authorization marker; no client writes.
+// coupons/{id}: code/value/status/timestamps. campaigns/{id}: title/description/
+//   status/timestamps. Verified non-anonymous members read published records.
+// messages/{id}: UID/name/email/subject/message/status/timestamps; private to admins
+//   after creation. settings/cloudinary stores only a public Worker URL and timestamp.
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -6,89 +29,479 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return signedIn() && (
+      return signedIn() && request.auth.token.email_verified == true && (
         request.auth.token.admin == true
         || exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
     }
 
+    function verifiedMember() {
+      return signedIn()
+        && request.auth.token.email_verified == true
+        && request.auth.token.firebase.sign_in_provider != 'anonymous';
+    }
+
     function validProduct(data) {
-      return data.keys().hasAll(['name', 'price', 'stock', 'sizes', 'active'])
+      return data.keys().hasAll(['name', 'category', 'price', 'stock', 'sizes', 'active', 'imageUrl', 'imagePublicId', 'updatedAt'])
+        && data.keys().hasOnly(['name', 'category', 'price', 'discount', 'stock', 'reservedStock', 'sizes', 'active', 'description', 'featured', 'imageUrl', 'imagePublicId', 'color', 'mark', 'seededExample', 'updatedAt', 'createdAt'])
         && data.name is string && data.name.size() > 0 && data.name.size() <= 160
-        && data.price is number && data.price > 0
-        && data.stock is int && data.stock >= 0
+        && data.category is string && data.category.size() > 0 && data.category.size() <= 80
+        && data.price is number && data.price > 0 && data.price <= 100000
+        && data.stock is int && data.stock >= 0 && data.stock <= 100000
+        && (!('reservedStock' in data) || (data.reservedStock is int && data.reservedStock >= 0 && data.reservedStock <= 100000))
         && data.sizes is list && data.sizes.size() > 0 && data.sizes.size() <= 20
         && data.active is bool
         && (!('discount' in data) || (data.discount is number && data.discount >= 0 && data.discount <= 100))
-        && (!('cost' in data) || data.cost == null || (data.cost is number && data.cost >= 0))
-        && (!('reservedStock' in data) || (data.reservedStock is int && data.reservedStock >= 0));
+        && (!('description' in data) || (data.description is string && data.description.size() <= 1200))
+        && (!('featured' in data) || data.featured is bool)
+        && data.imageUrl is string && data.imageUrl.size() <= 2048
+        && data.imageUrl.matches('https://res\\.cloudinary\\.com/[A-Za-z0-9_-]+/image/upload/.*')
+        && data.imagePublicId is string && data.imagePublicId.size() <= 255
+        && data.imagePublicId.matches('^graca/products/[A-Za-z0-9_-]{20,60}$')
+        && (!('seededExample' in data) || data.seededExample is bool)
+        && (!('color' in data) || (data.color is string && data.color.size() <= 40))
+        && (!('mark' in data) || (data.mark is string && data.mark.size() <= 80))
+        && data.updatedAt is timestamp
+        && (!('createdAt' in data) || data.createdAt is timestamp);
     }
 
-    function validCustomerCreate(uid) {
+    function validProductCost(data) {
+      return data.keys().hasAll(['cost', 'updatedAt'])
+        && data.keys().hasOnly(['cost', 'updatedAt'])
+        && (data.cost == null || (data.cost is number && data.cost >= 0 && data.cost <= 100000))
+        && data.updatedAt is timestamp;
+    }
+
+    function validProfileAddress(address) {
+      return address is map
+        && address.keys().hasOnly(['zip', 'street', 'number', 'complement', 'district', 'city', 'state'])
+        && (!('zip' in address) || (address.zip is string && address.zip.size() <= 12))
+        && (!('street' in address) || (address.street is string && address.street.size() <= 120))
+        && (!('number' in address) || (address.number is string && address.number.size() <= 20))
+        && (!('complement' in address) || (address.complement is string && address.complement.size() <= 120))
+        && (!('district' in address) || (address.district is string && address.district.size() <= 80))
+        && (!('city' in address) || (address.city is string && address.city.size() <= 80))
+        && (!('state' in address) || (address.state is string && address.state.size() <= 2));
+    }
+
+    function validCustomerData(data, uid) {
       return signedIn()
         && request.auth.uid == uid
-        && request.resource.data.keys().hasOnly(['uid', 'name', 'email', 'phone', 'address', 'createdAt', 'updatedAt'])
-        && request.resource.data.uid == uid
-        && request.resource.data.email == request.auth.token.email
-        && request.resource.data.name is string
-        && request.resource.data.name.size() > 0
-        && request.resource.data.name.size() <= 120
-        && request.resource.data.phone is string
-        && request.resource.data.phone.size() <= 40
-        && request.resource.data.address is map;
+        && data.keys().hasAll(['uid', 'name', 'email', 'phone', 'address', 'marketingConsent', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'name', 'email', 'phone', 'address', 'marketingConsent', 'createdAt', 'updatedAt'])
+        && data.uid == uid
+        && data.email == request.auth.token.email
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 120
+        && data.email is string && data.email.size() <= 254
+        && data.phone is string && data.phone.size() <= 40
+        && validProfileAddress(data.address)
+        && data.marketingConsent is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
     }
 
-    // Admin roles are managed in Firebase Console. Clients can inspect only
-    // their own role document; they can never grant or remove admin access.
+    function validCustomerUpdate(data, uid) {
+      return validCustomerData(data, uid)
+        && data.uid == resource.data.uid
+        && data.email == resource.data.email
+        && data.createdAt == resource.data.createdAt;
+    }
+
+    function validCategory(data) {
+      return data.keys().hasAll(['name', 'active', 'updatedAt'])
+        && data.keys().hasOnly(['name', 'active', 'updatedAt'])
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 80
+        && data.active is bool && data.updatedAt is timestamp;
+    }
+
+    function productExists(productId) {
+      return exists(/databases/$(database)/documents/products/$(productId));
+    }
+
+    function validReservationItem(item) {
+      return item is map
+        && item.keys().hasOnly(['productId', 'name', 'size', 'quantity', 'unitPriceCents'])
+        && item.keys().hasAll(['productId', 'name', 'size', 'quantity', 'unitPriceCents'])
+        && item.productId is string && item.productId.size() > 0 && item.productId.size() <= 150
+        && !item.productId.matches('.*[/].*')
+        && item.name is string && item.name.size() > 0 && item.name.size() <= 160
+        && item.size is string && item.size.size() > 0 && item.size.size() <= 40
+        && item.quantity is int && item.quantity > 0 && item.quantity <= 20
+        && item.unitPriceCents is int && item.unitPriceCents > 0
+        && productExists(item.productId)
+        && get(/databases/$(database)/documents/products/$(item.productId)).data.active == true
+        && get(/databases/$(database)/documents/products/$(item.productId)).data.name == item.name
+        && get(/databases/$(database)/documents/products/$(item.productId)).data.sizes.hasAny([item.size])
+        && item.quantity <= get(/databases/$(database)/documents/products/$(item.productId)).data.stock
+        && item.unitPriceCents == math.round(
+          get(/databases/$(database)/documents/products/$(item.productId)).data.price
+          * (100 - (('discount' in get(/databases/$(database)/documents/products/$(item.productId)).data)
+            ? get(/databases/$(database)/documents/products/$(item.productId)).data.discount : 0))
+        );
+    }
+
+    function validReservationItems(items) {
+      return items is list && items.size() > 0 && items.size() <= 6
+        && validReservationItem(items[0])
+        && (items.size() < 2 || validReservationItem(items[1]))
+        && (items.size() < 3 || validReservationItem(items[2]))
+        && (items.size() < 4 || validReservationItem(items[3]))
+        && (items.size() < 5 || validReservationItem(items[4]))
+        && (items.size() < 6 || validReservationItem(items[5]));
+    }
+
+    function validReservationTotal(data) {
+      return data.totalCents is int && data.totalCents > 0
+        && data.totalCents == data.items[0].unitPriceCents * data.items[0].quantity
+          + (data.items.size() > 1 ? data.items[1].unitPriceCents * data.items[1].quantity : 0)
+          + (data.items.size() > 2 ? data.items[2].unitPriceCents * data.items[2].quantity : 0)
+          + (data.items.size() > 3 ? data.items[3].unitPriceCents * data.items[3].quantity : 0)
+          + (data.items.size() > 4 ? data.items[4].unitPriceCents * data.items[4].quantity : 0)
+          + (data.items.size() > 5 ? data.items[5].unitPriceCents * data.items[5].quantity : 0);
+    }
+
+    function validAddress(data) {
+      return data.deliveryMethod == 'Retirada'
+        ? data.address is map && data.address.keys().size() == 0
+        : data.deliveryMethod == 'Entrega'
+          && data.address is map
+          && data.address.keys().hasOnly(['zip', 'street', 'number', 'district', 'city', 'state'])
+          && data.address.keys().hasAll(['zip', 'street', 'number', 'district', 'city', 'state'])
+          && data.address.zip is string && data.address.zip.size() <= 12
+          && data.address.street is string && data.address.street.size() > 0 && data.address.street.size() <= 120
+          && data.address.number is string && data.address.number.size() > 0 && data.address.number.size() <= 20
+          && data.address.district is string && data.address.district.size() > 0 && data.address.district.size() <= 80
+          && data.address.city is string && data.address.city.size() > 0 && data.address.city.size() <= 80
+          && data.address.state is string && data.address.state.size() == 2;
+    }
+
+    function validReservation(data) {
+      return signedIn()
+        && data.keys().hasAll(['uid', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt'])
+        && data.uid == request.auth.uid
+        && data.confirmationCode is string && data.confirmationCode.size() >= 10 && data.confirmationCode.size() <= 32
+        && data.customerName is string && data.customerName.size() > 0 && data.customerName.size() <= 120
+        && data.phone is string && data.phone.size() >= 7 && data.phone.size() <= 40
+        && validReservationItems(data.items)
+        && validReservationTotal(data)
+        && validAddress(data)
+        && data.pickupDetails is string && data.pickupDetails.size() <= 160
+        && data.notes is string && data.notes.size() <= 500
+        && data.marketingConsent is bool
+        && data.status == 'Aguardando confirmação'
+        && data.statusHistory == ['Aguardando confirmação']
+        && data.stockApplied == false && data.stockRestored == false
+        && validSalesMetadata(data)
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    function validStatusHistory(history) {
+      return history is list && history.size() >= 1 && history.size() <= 7
+        && history[0] == 'Aguardando confirmação'
+        && history.toSet().hasOnly(['Aguardando confirmação', 'Reserva confirmada', 'Em preparação', 'Disponível para retirada', 'Em rota de entrega', 'Entregue', 'Concluído', 'Cancelado']);
+    }
+
+    function historyPrefixUnchanged(oldHistory, newHistory) {
+      return (oldHistory.size() < 1 || newHistory[0] == oldHistory[0])
+        && (oldHistory.size() < 2 || newHistory[1] == oldHistory[1])
+        && (oldHistory.size() < 3 || newHistory[2] == oldHistory[2])
+        && (oldHistory.size() < 4 || newHistory[3] == oldHistory[3])
+        && (oldHistory.size() < 5 || newHistory[4] == oldHistory[4])
+        && (oldHistory.size() < 6 || newHistory[5] == oldHistory[5]);
+    }
+
+    function validSalesMetadata(data) {
+      return (data.status == 'Concluído'
+          && data.keys().hasAll(['salesChannel', 'paymentMethod', 'saleTotalCents', 'installmentCount', 'installmentValueCents', 'finalInstallmentValueCents', 'closedAt'])
+          && data.salesChannel in ['Loja física', 'Instagram', 'WhatsApp', 'Site', 'Outro']
+          && data.paymentMethod in ['Pix', 'Cartão de crédito à vista', 'Cartão de crédito parcelado', 'Cartão de débito', 'Dinheiro', 'Transferência']
+          && data.saleTotalCents is int && data.saleTotalCents > 0 && data.saleTotalCents <= 100000000
+          && data.installmentCount is int && data.installmentCount >= 1 && data.installmentCount <= 12
+          && data.installmentValueCents is int && data.installmentValueCents > 0
+          && data.finalInstallmentValueCents is int && data.finalInstallmentValueCents > 0
+          && data.installmentValueCents * (data.installmentCount - 1) + data.finalInstallmentValueCents == data.saleTotalCents
+          && ((data.paymentMethod == 'Cartão de crédito parcelado' && data.installmentCount >= 2)
+            || (data.paymentMethod != 'Cartão de crédito parcelado' && data.installmentCount == 1
+              && data.installmentValueCents == data.saleTotalCents))
+          && data.closedAt is timestamp && data.closedAt == request.time)
+        || (data.status != 'Concluído'
+          && !('salesChannel' in data) && !('paymentMethod' in data)
+          && !('saleTotalCents' in data) && !('installmentCount' in data)
+          && !('installmentValueCents' in data) && !('finalInstallmentValueCents' in data)
+          && !('closedAt' in data));
+    }
+
+    function validAdminReservation(data) {
+      return data.keys().hasAll(['uid', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt', 'confirmedAt', 'cancelledAt', 'salesChannel', 'paymentMethod', 'saleTotalCents', 'installmentCount', 'installmentValueCents', 'finalInstallmentValueCents', 'closedAt'])
+        && data.uid == resource.data.uid
+        && data.confirmationCode == resource.data.confirmationCode
+        && data.customerName == resource.data.customerName
+        && data.phone == resource.data.phone
+        && data.items == resource.data.items
+        && data.totalCents == resource.data.totalCents
+        && data.deliveryMethod == resource.data.deliveryMethod
+        && data.address == resource.data.address
+        && data.pickupDetails == resource.data.pickupDetails
+        && data.notes == resource.data.notes
+        && data.marketingConsent == resource.data.marketingConsent
+        && data.createdAt == resource.data.createdAt
+        && data.confirmationCode is string && data.confirmationCode.size() >= 10 && data.confirmationCode.size() <= 32
+        && data.customerName is string && data.customerName.size() > 0 && data.customerName.size() <= 120
+        && data.phone is string && data.phone.size() >= 7 && data.phone.size() <= 40
+        && validReservationItems(data.items)
+        && validReservationTotal(data)
+        && validAddress(data)
+        && data.pickupDetails is string && data.pickupDetails.size() <= 160
+        && data.notes is string && data.notes.size() <= 500
+        && data.marketingConsent is bool
+        && data.status in ['Aguardando confirmação', 'Reserva confirmada', 'Em preparação', 'Disponível para retirada', 'Em rota de entrega', 'Entregue', 'Concluído', 'Cancelado']
+        && validStatusHistory(data.statusHistory)
+        && validSalesMetadata(data)
+        && data.statusHistory.size() == resource.data.statusHistory.size() + 1
+        && historyPrefixUnchanged(resource.data.statusHistory, data.statusHistory)
+        && data.statusHistory[data.statusHistory.size() - 1] == data.status
+        && resource.data.statusHistory[resource.data.statusHistory.size() - 1] == resource.data.status
+        && data.stockApplied is bool && data.stockRestored is bool
+        && data.createdAt is timestamp && data.updatedAt is timestamp
+        && (!('confirmedAt' in data) || data.confirmedAt is timestamp)
+        && (!('cancelledAt' in data) || data.cancelledAt is timestamp)
+        && (!('confirmedAt' in resource.data) || ('confirmedAt' in data && data.confirmedAt == resource.data.confirmedAt))
+        && (!('confirmedAt' in data) || 'confirmedAt' in resource.data || data.status == 'Reserva confirmada')
+        && (!('cancelledAt' in resource.data) || ('cancelledAt' in data && data.cancelledAt == resource.data.cancelledAt))
+        && (!('cancelledAt' in data) || 'cancelledAt' in resource.data || data.status == 'Cancelado')
+        && (resource.data.status != 'Aguardando confirmação' || data.status != 'Reserva confirmada' || 'confirmedAt' in data);
+    }
+
+    function validCoupon(data) {
+      return data.keys().hasAll(['code', 'value', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['code', 'value', 'status', 'createdAt', 'updatedAt'])
+        && data.code is string && data.code.size() >= 3 && data.code.size() <= 30
+        && data.value is int && data.value >= 1 && data.value <= 100
+        && data.status in ['draft', 'published']
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    function validCampaign(data) {
+      return data.keys().hasAll(['title', 'description', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['title', 'description', 'status', 'createdAt', 'updatedAt'])
+        && data.title is string && data.title.size() > 0 && data.title.size() <= 120
+        && data.description is string && data.description.size() > 0 && data.description.size() <= 500
+        && data.status in ['draft', 'published']
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    function validMessageData(data) {
+      return data.keys().hasAll(['uid', 'name', 'email', 'subject', 'message', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'name', 'email', 'subject', 'message', 'status', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid.size() > 0 && data.uid.size() <= 128
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 120
+        && data.email is string && data.email.size() > 3 && data.email.size() <= 254
+        && data.email.matches('^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$')
+        && data.subject is string && data.subject.size() > 0 && data.subject.size() <= 100
+        && data.message is string && data.message.size() >= 8 && data.message.size() <= 1500
+        && data.status in ['Nova', 'Em atendimento', 'Concluída']
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    function validMessage(data) {
+      return signedIn() && validMessageData(data)
+        && data.uid == request.auth.uid && data.status == 'Nova';
+    }
+
+    function validSubmissionCooldown(data, uid) {
+      return data.keys().hasAll(['uid', 'lastSubmittedAt'])
+        && data.keys().hasOnly(['uid', 'lastSubmittedAt'])
+        && data.uid == uid
+        && data.lastSubmittedAt is timestamp
+        && data.lastSubmittedAt == request.time;
+    }
+
+    function reservationCooldownWritten() {
+      let path = /databases/$(database)/documents/reservationLimits/$(request.auth.uid);
+      return signedIn() && existsAfter(path)
+        && getAfter(path).data.uid == request.auth.uid
+        && getAfter(path).data.lastSubmittedAt == request.time;
+    }
+
+    function messageCooldownWritten() {
+      let path = /databases/$(database)/documents/messageLimits/$(request.auth.uid);
+      return signedIn() && existsAfter(path)
+        && getAfter(path).data.uid == request.auth.uid
+        && getAfter(path).data.lastSubmittedAt == request.time;
+    }
+
+    function validCloudinarySetting(data) {
+      return data.keys().hasAll(['workerUrl', 'updatedAt'])
+        && data.keys().hasOnly(['workerUrl', 'updatedAt'])
+        && data.workerUrl is string && data.workerUrl.size() <= 2048
+        && (data.workerUrl == '' || data.workerUrl.matches('https://.*\\.workers\\.dev(/upload)?'))
+        && data.updatedAt is timestamp;
+    }
+
+    function validTransition() {
+      return (resource.data.status == 'Aguardando confirmação'
+          && request.resource.data.status in ['Reserva confirmada', 'Cancelado'])
+        || (resource.data.status == 'Reserva confirmada'
+          && request.resource.data.status in ['Em preparação', 'Cancelado'])
+        || (resource.data.status == 'Em preparação'
+          && request.resource.data.status in ['Disponível para retirada', 'Em rota de entrega', 'Cancelado'])
+        || (resource.data.status == 'Disponível para retirada'
+          && request.resource.data.status in ['Entregue', 'Cancelado'])
+        || (resource.data.status == 'Em rota de entrega'
+          && request.resource.data.status in ['Entregue', 'Cancelado'])
+        || (resource.data.status == 'Entregue'
+          && request.resource.data.status == 'Concluído');
+    }
+
+    function validStockTransition() {
+      return (request.resource.data.status == 'Reserva confirmada'
+          && request.resource.data.stockApplied == true
+          && request.resource.data.stockRestored == false)
+        || (request.resource.data.status == 'Cancelado'
+          && resource.data.stockApplied == true
+          && resource.data.stockRestored == false
+          && request.resource.data.stockApplied == false
+          && request.resource.data.stockRestored == true)
+        || (request.resource.data.status == 'Cancelado'
+          && resource.data.stockApplied == false
+          && request.resource.data.stockApplied == false
+          && request.resource.data.stockRestored == resource.data.stockRestored)
+        || (request.resource.data.status in ['Em preparação', 'Disponível para retirada', 'Em rota de entrega', 'Entregue', 'Concluído']
+          && request.resource.data.stockApplied == resource.data.stockApplied
+          && request.resource.data.stockRestored == resource.data.stockRestored);
+    }
+
+    // A autorização é administrada somente pelo Console/SDK Admin. O titular
+    // pode consultar o próprio documento, mas nunca conceder acesso a si.
     match /admins/{uid} {
       allow get: if signedIn() && request.auth.uid == uid;
       allow list, create, update, delete: if false;
     }
 
     match /customers/{uid} {
-      allow read: if isAdmin() || (signedIn() && request.auth.uid == uid);
-      allow create: if validCustomerCreate(uid);
-      allow update: if signedIn()
-        && request.auth.uid == uid
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'phone', 'address', 'updatedAt'])
-        && request.resource.data.name is string
-        && request.resource.data.name.size() > 0
-        && request.resource.data.name.size() <= 120
-        && request.resource.data.phone is string
-        && request.resource.data.phone.size() <= 40
-        && request.resource.data.address is map;
+      allow get: if isAdmin() || (signedIn() && request.auth.uid == uid);
+      allow list: if isAdmin();
+      allow create: if validCustomerData(request.resource.data, uid);
+      allow update: if signedIn() && request.auth.uid == uid
+        && validCustomerUpdate(request.resource.data, uid)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'phone', 'address', 'marketingConsent', 'updatedAt']);
       allow delete: if false;
     }
 
     match /products/{productId} {
-      allow read: if true;
-      allow create, update: if isAdmin() && validProduct(request.resource.data);
+      // A loja pública lê somente o catálogo publicado. Administradores
+      // autorizados podem consultar também os produtos inativos.
+      allow get, list: if isAdmin() || resource.data.active == true;
+      allow create: if isAdmin() && validProduct(request.resource.data);
+      allow update: if isAdmin() && validProduct(request.resource.data)
+        && (('createdAt' in resource.data)
+          ? request.resource.data.createdAt == resource.data.createdAt
+          : !('createdAt' in request.resource.data));
+      allow delete: if false;
+    }
+
+    match /productCosts/{productId} {
+      allow get, list: if isAdmin();
+      allow create, update: if isAdmin() && validProductCost(request.resource.data);
+      allow delete: if false;
+    }
+
+    match /categories/{categoryId} {
+      allow get, list: if isAdmin() || resource.data.active == true;
+      allow create, update: if isAdmin() && validCategory(request.resource.data);
       allow delete: if false;
     }
 
     match /orders/{orderId} {
-      allow read: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
-      allow create: if false;
+      // O checkout gera primeiro um ID aleatório e consulta esse documento
+      // para tornar uma tentativa repetida idempotente. Permitir somente o
+      // get de documentos ausentes não expõe pedidos existentes de terceiros.
+      allow get: if isAdmin() || (signedIn() && (resource == null || resource.data.uid == request.auth.uid));
+      allow list: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow create: if validReservation(request.resource.data) && reservationCooldownWritten();
       allow update: if isAdmin()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
-        && request.resource.data.status in ['Pendente de pagamento', 'Pagamento confirmado', 'Em preparação', 'Enviado', 'Entregue', 'Concluído', 'Cancelado'];
+        && validAdminReservation(request.resource.data)
+        && validTransition()
+        && validStockTransition()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'statusHistory', 'updatedAt', 'stockApplied', 'stockRestored', 'confirmedAt', 'cancelledAt', 'salesChannel', 'paymentMethod', 'saleTotalCents', 'installmentCount', 'installmentValueCents', 'finalInstallmentValueCents', 'closedAt'])
+        && request.resource.data.updatedAt is timestamp;
       allow delete: if false;
     }
 
-    match /coupons/{couponCode} {
-      allow read: if isAdmin();
-      allow create: if isAdmin()
-        && request.resource.data.keys().hasOnly(['active', 'value', 'maxUses', 'uses', 'reservedUses'])
-        && request.resource.data.active is bool
-        && request.resource.data.value is number
-        && request.resource.data.value >= 1 && request.resource.data.value <= 100
-        && request.resource.data.uses == 0
-        && request.resource.data.reservedUses == 0;
+    match /reservationLimits/{uid} {
+      allow get: if signedIn() && request.auth.uid == uid;
+      allow list: if false;
+      allow create: if signedIn() && request.auth.uid == uid
+        && validSubmissionCooldown(request.resource.data, uid);
+      allow update: if signedIn() && request.auth.uid == uid
+        && validSubmissionCooldown(request.resource.data, uid)
+        && request.time >= resource.data.lastSubmittedAt + duration.value(30, 's');
+      allow delete: if false;
+    }
+
+    match /coupons/{couponId} {
+      allow get, list: if isAdmin() || (verifiedMember() && resource.data.status == 'published');
+      allow create: if isAdmin() && validCoupon(request.resource.data);
       allow update: if isAdmin()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active', 'value', 'maxUses'])
-        && request.resource.data.active is bool
-        && request.resource.data.value is number
-        && request.resource.data.value >= 1 && request.resource.data.value <= 100;
+        && validCoupon(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
+        && request.resource.data.code == resource.data.code
+        && request.resource.data.value == resource.data.value
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.status in ['draft', 'published']
+        && request.resource.data.updatedAt is timestamp;
+      allow delete: if false;
+    }
+
+    match /campaigns/{campaignId} {
+      allow get, list: if isAdmin() || (verifiedMember() && resource.data.status == 'published');
+      allow create: if isAdmin() && validCampaign(request.resource.data);
+      allow update: if isAdmin()
+        && validCampaign(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
+        && request.resource.data.title == resource.data.title
+        && request.resource.data.description == resource.data.description
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.status in ['draft', 'published']
+        && request.resource.data.updatedAt is timestamp;
+      allow delete: if false;
+    }
+
+    match /messages/{messageId} {
+      allow get, list: if isAdmin();
+      allow create: if signedIn() && validMessage(request.resource.data) && messageCooldownWritten();
+      allow update: if isAdmin()
+        && validMessageData(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.name == resource.data.name
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.subject == resource.data.subject
+        && request.resource.data.message == resource.data.message
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.status in ['Nova', 'Em atendimento', 'Concluída']
+        && request.resource.data.updatedAt is timestamp;
+      allow delete: if false;
+    }
+
+    match /messageLimits/{uid} {
+      allow get: if signedIn() && request.auth.uid == uid;
+      allow list: if false;
+      allow create: if signedIn() && request.auth.uid == uid
+        && validSubmissionCooldown(request.resource.data, uid);
+      allow update: if signedIn() && request.auth.uid == uid
+        && validSubmissionCooldown(request.resource.data, uid)
+        && request.time >= resource.data.lastSubmittedAt + duration.value(30, 's');
+      allow delete: if false;
+    }
+
+    match /settings/{settingId} {
+      allow get: if settingId == 'cloudinary';
+      allow list: if false;
+      allow create, update: if isAdmin() && settingId == 'cloudinary'
+        && validCloudinarySetting(request.resource.data);
       allow delete: if false;
     }
 
@@ -97,3 +510,4 @@ service cloud.firestore {
     }
   }
 }
+

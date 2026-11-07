@@ -115,42 +115,8 @@ async function reserveOrder({ orderRef, uid, email, clientOrderId, request }) {
   if (normalized.some(item => !item.id || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20)) throw new Error("CART_INVALID");
   if (new Set(normalized.map(item => `${item.id}:${item.size}`)).size !== normalized.length) throw new Error("CART_INVALID");
   const productRefs = [...new Map(normalized.map(item => [item.id, products.doc(item.id)])).values()];
-  const productSnapshots = await db.getAll(...productRefs);
-  const byId = new Map(productSnapshots.map(snapshot => [snapshot.id, snapshot]));
-  const saleItems = normalized.map(item => {
-    const snapshot = byId.get(item.id);
-    if (!snapshot?.exists) throw new Error("PRODUCT_UNAVAILABLE");
-    const product = snapshot.data();
-    if (product.active === false) throw new Error("PRODUCT_UNAVAILABLE");
-    const basePrice = moneyNumber(product.price);
-    const discount = Math.max(0, Math.min(100, Number(product.discount || 0)));
-    const unitPrice = moneyNumber(basePrice * (100 - discount) / 100);
-    if (unitPrice === null || unitPrice <= 0 || !Array.isArray(product.sizes) || !product.sizes.includes(item.size)) throw new Error("PRODUCT_INVALID");
-    return {
-      id: item.id,
-      size: item.size,
-      quantity: item.quantity,
-      productName: String(product.name || item.id),
-      unitPrice,
-      unitCostAtSale: product.cost != null && Number.isFinite(Number(product.cost)) ? Number(product.cost) : null,
-      stock: Number(product.stock || 0)
-    };
-  });
-  const itemTotals = saleItems.map(item => ({ ...item, lineTotal: moneyNumber(item.unitPrice * item.quantity) }));
-  const subtotal = moneyNumber(itemTotals.reduce((sum, item) => sum + item.lineTotal, 0));
-  let couponRef = null;
-  let couponPercent = 0;
   const couponCode = String(request?.coupon || "").trim().toUpperCase();
-  if (couponCode) {
-    couponRef = coupons.doc(couponCode);
-    const couponSnapshot = await couponRef.get();
-    if (!couponSnapshot.exists) throw new Error("COUPON_INVALID");
-    const coupon = couponSnapshot.data();
-    couponPercent = Number(coupon.value || 0);
-    if (!coupon.active || couponPercent < 1 || couponPercent > 100) throw new Error("COUPON_INVALID");
-  }
-  const total = moneyNumber(subtotal * (100 - couponPercent) / 100);
-  if (total === null || total <= 0) throw new Error("TOTAL_INVALID");
+  const couponRef = couponCode ? coupons.doc(couponCode) : null;
   const address = request?.address || {};
   for (const field of ["zip", "street", "number", "district", "city", "state"]) {
     if (typeof address[field] !== "string" || !address[field].trim()) throw new Error("ADDRESS_INVALID");
@@ -168,6 +134,17 @@ async function reserveOrder({ orderRef, uid, email, clientOrderId, request }) {
     const liveProducts = await Promise.all(productRefs.map(ref => transaction.get(ref)));
     const liveCoupon = couponRef ? await transaction.get(couponRef) : null;
     const liveById = new Map(liveProducts.map(snapshot => [snapshot.id, snapshot]));
+    const saleItems = normalized.map(item => {
+      const snapshot = liveById.get(item.id);
+      if (!snapshot?.exists) throw new Error("PRODUCT_UNAVAILABLE");
+      const product = snapshot.data();
+      if (product.active === false) throw new Error("PRODUCT_UNAVAILABLE");
+      const basePrice = moneyNumber(product.price);
+      const discount = Math.max(0, Math.min(100, Number(product.discount || 0)));
+      const unitPrice = moneyNumber(basePrice * (100 - discount) / 100);
+      if (unitPrice === null || unitPrice <= 0 || !Array.isArray(product.sizes) || !product.sizes.includes(item.size)) throw new Error("PRODUCT_INVALID");
+      return { id: item.id, size: item.size, quantity: item.quantity, productName: String(product.name || item.id), unitPrice, stock: Number(product.stock || 0) };
+    });
     const quantitiesByProduct = new Map();
     for (const item of saleItems) quantitiesByProduct.set(item.id, (quantitiesByProduct.get(item.id) || 0) + item.quantity);
     for (const [productId, quantity] of quantitiesByProduct) {
@@ -176,19 +153,26 @@ async function reserveOrder({ orderRef, uid, email, clientOrderId, request }) {
       const available = Number(product?.stock || 0) - Number(product?.reservedStock || 0);
       if (!snapshot?.exists || product.active === false || available < quantity) throw new Error("STOCK_UNAVAILABLE");
     }
+    const itemTotals = saleItems.map(item => ({ ...item, lineTotal: moneyNumber(item.unitPrice * item.quantity) }));
+    const subtotal = moneyNumber(itemTotals.reduce((sum, item) => sum + item.lineTotal, 0));
+    let couponPercent = 0;
     if (couponRef) {
       const coupon = liveCoupon?.data();
+      couponPercent = Number(coupon?.value || 0);
       const maxUses = coupon?.maxUses == null ? null : Number(coupon.maxUses);
-      if (!liveCoupon?.exists || !coupon.active || (maxUses !== null && Number(coupon.uses || 0) + Number(coupon.reservedUses || 0) >= maxUses)) throw new Error("COUPON_UNAVAILABLE");
+      if (!liveCoupon?.exists || !coupon.active || couponPercent < 1 || couponPercent > 100
+        || (maxUses !== null && Number(coupon.uses || 0) + Number(coupon.reservedUses || 0) >= maxUses)) throw new Error("COUPON_UNAVAILABLE");
       transaction.update(couponRef, { reservedUses: admin.firestore.FieldValue.increment(1) });
     }
+    const total = moneyNumber(subtotal * (100 - couponPercent) / 100);
+    if (total === null || total <= 0) throw new Error("TOTAL_INVALID");
     for (const [productId, quantity] of quantitiesByProduct) transaction.update(products.doc(productId), { reservedStock: admin.firestore.FieldValue.increment(quantity) });
     transaction.create(orderRef, {
       id: clientOrderId,
       uid,
       email,
       name: String(request?.name || "").slice(0, 120),
-      items: itemTotals.map(({ stock, ...item }) => item),
+      items: itemTotals.map(({ stock, lineTotal, ...item }) => item),
       subtotal,
       coupon: couponCode || "",
       couponPercent,
@@ -211,7 +195,7 @@ async function reserveOrder({ orderRef, uid, email, clientOrderId, request }) {
       couponReserved: Boolean(couponRef),
       couponCounted: false
     });
-    return { created: true, total, items: itemTotals.map(({ stock, ...item }) => item), idempotencyKey };
+    return { created: true, total, items: itemTotals.map(({ stock, lineTotal, ...item }) => item), idempotencyKey };
   });
 }
 
@@ -450,3 +434,4 @@ exports.mercadopagoWebhook = onRequest({
     return res.sendStatus(500);
   }
 });
+
