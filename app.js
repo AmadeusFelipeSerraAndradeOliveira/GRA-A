@@ -1,12 +1,15 @@
 import {
   createUserWithEmailAndPassword,
+  EmailAuthProvider,
   getAuth,
+  getIdToken,
   getIdTokenResult,
   onAuthStateChanged,
   signInAnonymously,
   sendEmailVerification,
   sendPasswordResetEmail,
   reload,
+  reauthenticateWithCredential,
   signInWithEmailAndPassword,
   signOut,
   updateProfile
@@ -206,12 +209,13 @@ let analyticsFrom = firstDayOfMonth.toLocaleDateString('sv-SE');
 let analyticsTo = currentDay.toLocaleDateString('sv-SE');
 let categoriesFromFirestore = [];
 let catalogLoaded = false;
-let productUnsubscribe = null, productCostUnsubscribe = null, categoryUnsubscribe = null, orderUnsubscribe = null, customerUnsubscribe = null, messageUnsubscribe = null, vipUnsubscribe = null, commentsUnsubscribe = null, benefitUnsubscribers = [];
+let productUnsubscribe = null, productCostUnsubscribe = null, categoryUnsubscribe = null, orderUnsubscribe = null, customerUnsubscribe = null, messageUnsubscribe = null, vipUnsubscribe = null, financeSettingsUnsubscribe = null, commentsUnsubscribe = null, benefitUnsubscribers = [];
 let firestoreComments = [];
 let productCosts = new Map();
 let migratingLegacyProductCosts = false;
 let adminProductSearch = '';
 let adminVipSearch = '';
+let financeBaselineAt = null;
 let vipUsers = [];
 let vipInviteUrl = '';
 let appliedCartCoupon = null;
@@ -267,6 +271,9 @@ const friendlyFirestoreError = error => {
   if (error?.code === 'auth/operation-not-allowed') return 'Ative o provedor Anônimo em Firebase Authentication → Sign-in method.';
   return error?.message || 'Não foi possível salvar. Tente novamente.';
 };
+const friendlyReservationError = error => error?.code==='permission-denied'
+  ? 'O Firebase recusou a reserva. Aguarde 30 segundos se este WhatsApp enviou outra solicitação recentemente; caso contrário, atualize a página e tente novamente. Se continuar, confira se o produto e o cupom seguem disponíveis.'
+  : friendlyFirestoreError(error);
 
 const submissionCooldownMs = 30_000;
 function checkBrowserCooldown(kind) {
@@ -275,34 +282,87 @@ function checkBrowserCooldown(kind) {
 }
 function markBrowserCooldown(kind) { localStorage.setItem(`graca_${kind}_last_submit`,String(Date.now())); }
 function normalizeBrazilPhone(value) { return String(value||'').replace(/\D/g,''); }
+function couponUsageLabel(coupon) {
+  const total=Number(coupon.uses||0),reserved=Number(coupon.reservedUses||0),max=coupon.maxUses==null?null:Number(coupon.maxUses);
+  return `${total} finalizado(s)${reserved?` · ${reserved} reservado(s)`:''}${max===null?' · sem limite':` / ${max}`}`;
+}
 function newConfirmationCode() {
   const bytes=new Uint8Array(8);crypto.getRandomValues(bytes);
   return `G${[...bytes].map(value=>value.toString(16).padStart(2,'0')).join('').toUpperCase()}`;
 }
 async function ensureSubmissionUser() {
-  return auth.currentUser||(await signInAnonymously(auth)).user;
+  let user=auth.currentUser;
+  if(user){
+    try{
+      await getIdToken(user,true);
+      return user;
+    }catch(error){
+      const expiredSessionErrors=new Set(['auth/invalid-user-token','auth/user-token-expired','auth/invalid-refresh-token','auth/user-not-found','auth/user-disabled']);
+      if(!expiredSessionErrors.has(error?.code))throw error;
+      console.warn('Sessão Firebase expirada; iniciando uma sessão temporária nova para a reserva.',error?.code);
+      await signOut(auth).catch(()=>{});
+      currentUser=null;isAdmin=false;memberNav();
+    }
+  }
+  return (await signInAnonymously(auth)).user;
 }
 async function createReservationRequest({orderId,uid:ownerUid,customerName,phone,items,totalCents,subtotalCents,discountCents,couponCode,couponPercent,deliveryMethod,address,pickupDetails,notes,marketingConsent}) {
   checkBrowserCooldown('reservation');
   const user=await ensureSubmissionUser();
   if(user.uid!==ownerUid)throw new Error('A sessão mudou. Reabra a finalização e tente novamente.');
-  const orderRef=doc(db,'orders',orderId),existing=await getDoc(orderRef);
-  if(existing.exists()){
-    const saved=existing.data();
-    if(saved.uid!==user.uid)throw new Error('Não foi possível reutilizar este código de solicitação.');
-    return {orderId,confirmationCode:saved.confirmationCode,status:saved.status,totalCents:saved.totalCents};
-  }
   const phoneDigits=normalizeBrazilPhone(phone);
   if(!/^\d{10,13}$/.test(phoneDigits))throw new Error('Informe um WhatsApp com DDD, usando de 10 a 13 números.');
   const confirmationCode=newConfirmationCode(),now=serverTimestamp();
   const order={uid:user.uid,confirmationCode,customerName,phone:phoneDigits,items,totalCents,deliveryMethod,address,pickupDetails,notes,marketingConsent,status:'Aguardando confirmação',statusHistory:['Aguardando confirmação'],stockApplied:false,stockRestored:false,createdAt:now,updatedAt:now};
-  if(couponCode)Object.assign(order,{subtotalCents,discountCents,couponCode,couponPercent});
-  const batch=writeBatch(db);
-  batch.set(orderRef,order);
-  batch.set(doc(db,'reservationLimits',phoneDigits),{phone:phoneDigits,lastOrderId:orderId,lastSubmittedAt:now});
-  await batch.commit();
+  const orderRef=doc(db,'orders',orderId),limitRef=doc(db,'reservationLimits',phoneDigits);
+  let savedOrder=await runTransaction(db,async transaction=>{
+    const existing=await transaction.get(orderRef);
+    if(existing.exists()){
+      const saved=existing.data();
+      if(saved.uid!==user.uid)throw new Error('Não foi possível reutilizar este código de solicitação.');
+      if((saved.couponCode&&saved.couponCode!==couponCode)||(!couponCode&&saved.couponCode))throw new Error('Esta tentativa já foi iniciada com outro cupom. Atualize a página e envie novamente.');
+      return {orderId,confirmationCode:saved.confirmationCode,status:saved.status,totalCents:saved.totalCents,couponReserved:saved.couponReserved===true};
+    }
+    transaction.set(orderRef,order);
+    transaction.set(limitRef,{phone:phoneDigits,lastOrderId:orderId,lastSubmittedAt:now});
+    return {orderId,confirmationCode,status:order.status,totalCents,couponReserved:false};
+  });
+  if(couponCode&&!savedOrder.couponReserved){
+    try{
+      const couponResult=await reserveCouponForOrder(orderId,user.uid,{couponCode,couponPercent,subtotalCents});
+      savedOrder={...savedOrder,totalCents:couponResult.totalCents,couponReserved:true};
+    }catch(error){
+      const saved=await getDoc(orderRef);
+      if(saved.exists()&&saved.data().couponReserved===true&&saved.data().couponCode===couponCode)savedOrder={...savedOrder,totalCents:Number(saved.data().totalCents||totalCents),couponReserved:true};
+      else{
+        savedOrder={...savedOrder,totalCents:subtotalCents,couponUnavailable:true};
+      }
+      console.warn('A reserva foi salva sem o cupom porque seu limite foi atingido durante o envio.',error?.code||error?.message);
+    }
+  }
   markBrowserCooldown('reservation');
-  return {orderId,confirmationCode,status:order.status,totalCents};
+  return savedOrder;
+}
+
+async function reserveCouponForOrder(orderId,ownerUid,{couponCode,couponPercent,subtotalCents}) {
+  const orderRef=doc(db,'orders',orderId),couponRef=doc(db,'coupons',couponCode);
+  return runTransaction(db,async transaction=>{
+    const [orderSnapshot,couponSnapshot]=await Promise.all([transaction.get(orderRef),transaction.get(couponRef)]);
+    if(!orderSnapshot.exists()||!couponSnapshot.exists())throw new Error('Pedido ou cupom não encontrado.');
+    const order=orderSnapshot.data(),coupon=couponSnapshot.data();
+    if(order.uid!==ownerUid||order.status==='Cancelado'||order.status==='Concluído')throw new Error('O pedido não pode mais receber o cupom.');
+    if(order.couponReserved===true&&order.couponCode===couponCode)return {totalCents:Number(order.totalCents)};
+    if(order.couponCode)throw new Error('Este pedido já está associado a outro cupom.');
+    const maxUses=coupon.maxUses==null?null:Number(coupon.maxUses);
+    if(coupon.status!=='published'||Number(coupon.value)!==Number(couponPercent))throw new Error('O cupom deixou de estar disponível.');
+    if(maxUses!==null&&Number(coupon.uses||0)+Number(coupon.reservedUses||0)>=maxUses)throw new Error('O limite de utilizações deste cupom foi atingido.');
+    const subtotal=Number(subtotalCents);
+    if(!Number.isSafeInteger(subtotal)||subtotal!==Number(order.totalCents)||subtotal<=0)throw new Error('O total do pedido mudou. Atualize a página e tente novamente.');
+    const discount=Math.round(subtotal*Number(coupon.value)/100),discountedTotal=subtotal-discount;
+    transaction.update(couponRef,{reservedUses:Number(coupon.reservedUses||0)+1,lastReservationId:orderId,updatedAt:serverTimestamp()});
+    transaction.update(orderRef,{subtotalCents:subtotal,discountCents:discount,couponCode,couponPercent:Number(coupon.value),couponReserved:true,couponCounted:false,totalCents:discountedTotal,updatedAt:serverTimestamp()});
+    return {totalCents:discountedTotal};
+  });
 }
 async function createContactMessage({name,email,phone,subject,message,companyWebsite}) {
   if(companyWebsite)return {ignored:true};
@@ -409,7 +469,9 @@ function subscribeUserData(user) {
   customerUnsubscribe?.();
   messageUnsubscribe?.();
   vipUnsubscribe?.();
+  financeSettingsUnsubscribe?.();
   stopBenefitsSubscriptions();
+  financeBaselineAt=null;
   orders = [];
   orderSnapshotPrimed = false;
   customers = [];
@@ -439,6 +501,10 @@ function subscribeUserData(user) {
       vipUsers = snapshot.docs.map(item => ({ ...item.data(), id: item.id }));
       if ($('#adminContent') && adminTab === 'customers') renderAdminContent();
     }, error => console.error('Falha ao sincronizar clientes VIP:', error));
+    financeSettingsUnsubscribe=onSnapshot(doc(db,'settings','finance'),snapshot=>{
+      financeBaselineAt=snapshot.exists()&&snapshot.data().baselineAt?safeDate(snapshot.data().baselineAt):null;
+      if($('#adminContent')&&['overview','orders','analytics'].includes(adminTab))renderAdminContent();
+    },error=>console.error('Falha ao sincronizar o marco financeiro:',error));
   }
 }
 
@@ -623,24 +689,23 @@ checkout = function() {
     if(deliveryMethod==='Entrega'&&Object.values(addressData).some(value=>!value))return toast('Complete o endereço de entrega.');
     savingReservation=true; const button=$('#submitReservation');button.disabled=true;button.textContent='ENVIANDO…';
     try {
-      let user=auth.currentUser;
-      if(!user)user=(await signInAnonymously(auth)).user;
-      const cartFingerprint=JSON.stringify(items.map(item=>[item.productId,item.size,item.quantity]));
+      const user=await ensureSubmissionUser();
+      const coupon=appliedCartCoupon?.code===cartCoupon?appliedCartCoupon:null;
+      const cartFingerprint=JSON.stringify({items:items.map(item=>[item.productId,item.size,item.quantity]),coupon:coupon?.code||''});
       const savedDraft=get('pendingReservation',null);
       let orderId=savedDraft?.fingerprint===cartFingerprint&&savedDraft?.uid===user.uid?savedDraft.orderId:'';
       if(!orderId){orderId=doc(collection(db,'orders')).id;set('pendingReservation',{fingerprint:cartFingerprint,uid:user.uid,orderId});}
-      const coupon=appliedCartCoupon?.code===cartCoupon?appliedCartCoupon:null;
-      const savedOrder=await createReservationRequest({orderId,uid:user.uid,customerName:name,phone,items,totalCents:totals.totalCents,subtotalCents:totals.subtotalCents,discountCents:totals.discountCents,couponCode:coupon?.code||'',couponPercent:coupon?.value||0,deliveryMethod,address:addressData,pickupDetails:String(form.get('pickupDetails')||'').trim().slice(0,160),notes:String(form.get('notes')||'').trim().slice(0,500),marketingConsent:form.get('marketingConsent')==='on'});
+      const savedOrder=await createReservationRequest({orderId,uid:user.uid,customerName:name,phone,items,totalCents:totals.subtotalCents,subtotalCents:totals.subtotalCents,discountCents:totals.discountCents,couponCode:coupon?.code||'',couponPercent:coupon?.value||0,deliveryMethod,address:addressData,pickupDetails:String(form.get('pickupDetails')||'').trim().slice(0,160),notes:String(form.get('notes')||'').trim().slice(0,500),marketingConsent:form.get('marketingConsent')==='on'});
       if(!savedOrder?.orderId||!savedOrder?.confirmationCode)throw new Error('A solicitação não retornou uma confirmação válida. Tente novamente.');
       cart=[];cartCoupon='';set('cart',cart);set('cartCoupon','');renderCart();
       appliedCartCoupon=null;
       localStorage.removeItem('graca_pendingReservation');
       closeModal();
-      openModal(`<div class="section-kicker">SOLICITAÇÃO REGISTRADA</div><h2 id="modalTitle">RECEBEMOS SEU PEDIDO.</h2><div class="confirmation-code">${htm(savedOrder.confirmationCode)}</div><p>O status é <strong>${htm(savedOrder.status||'Aguardando confirmação')}</strong>. A equipe da GRAÇA vai verificar o estoque e conversar com você pelo WhatsApp.</p><p>${items.map(item=>`${htm(item.name)} · ${htm(item.size)} · ${item.quantity} un.`).join('<br>')}</p><p>Valor estimado: <strong>${money(Number(savedOrder.totalCents||totals.totalCents)/100)}</strong><br>Modalidade: <strong>${htm(deliveryMethod)}</strong></p><p class="fine-print">Esta solicitação não é uma compra concluída nem uma reserva confirmada automaticamente. Nenhum pagamento será solicitado nesta etapa.</p><a class="pill-button dark" href="${htm(adminReservationAlertLink(savedOrder.confirmationCode))}" target="_blank" rel="noopener">AVISAR A EQUIPE PELO WHATSAPP ↗</a><p class="fine-print">O WhatsApp abrirá uma mensagem pronta. Toque em enviar para avisar a equipe.</p><button class="mini-button" id="reservationDone">VOLTAR À LOJA</button>`);
+      openModal(`<div class="section-kicker">SOLICITAÇÃO REGISTRADA</div><h2 id="modalTitle">RECEBEMOS SEU PEDIDO.</h2><div class="confirmation-code">${htm(savedOrder.confirmationCode)}</div><p>O status é <strong>${htm(savedOrder.status||'Aguardando confirmação')}</strong>. A equipe da GRAÇA vai verificar o estoque e conversar com você pelo WhatsApp.</p><p>${items.map(item=>`${htm(item.name)} · ${htm(item.size)} · ${item.quantity} un.`).join('<br>')}</p><p>Valor estimado: <strong>${money(Number(savedOrder.totalCents||totals.totalCents)/100)}</strong><br>Modalidade: <strong>${htm(deliveryMethod)}</strong></p>${savedOrder.couponUnavailable?'<p class="vip-access-notice"><strong>O limite deste cupom foi atingido durante o envio.</strong><br>A solicitação foi registrada pelo valor normal, sem desconto.</p>':''}<p class="fine-print">Esta solicitação não é uma compra concluída nem uma reserva confirmada automaticamente. Nenhum pagamento será solicitado nesta etapa.</p><a class="pill-button dark" href="${htm(adminReservationAlertLink(savedOrder.confirmationCode))}" target="_blank" rel="noopener">AVISAR A EQUIPE PELO WHATSAPP ↗</a><p class="fine-print">O WhatsApp abrirá uma mensagem pronta. Toque em enviar para avisar a equipe.</p><button class="mini-button" id="reservationDone">VOLTAR À LOJA</button>`);
       $('#reservationDone').onclick=closeModal;
     } catch(error) {
       console.error('Falha ao enviar solicitação de reserva:',error);
-      button.disabled=false;button.textContent='ENVIAR SOLICITAÇÃO ↗';toast(friendlyFirestoreError(error));
+      button.disabled=false;button.textContent='ENVIAR SOLICITAÇÃO ↗';toast(friendlyReservationError(error));
     } finally { savingReservation=false; }
   };
 };
@@ -696,9 +761,9 @@ function whatsappLink(order) {
 }
 
 function renderAdminOrders() {
-  const pending=orders.filter(order=>order.status==='Aguardando confirmação').length;
-  const rows=orders.map(order=>`<tr><td><button class="mini-button" data-order-details="${htm(order.id)}">${htm(order.confirmationCode||order.id)}</button></td><td>${htm(order.customerName)}</td><td>${safeDate(order.createdAt).toLocaleString('pt-BR')}</td><td>${money(order.status==='Concluído'?Number(order.saleTotalCents)/100:displayTotal(order))}</td><td><span class="status ${order.status==='Aguardando confirmação'?'pending':''}">${htm(order.status)}</span></td><td>${whatsappLink(order)}</td><td>${order.status==='Entregue'?`<button class="mini-button primary" data-close-order="${htm(order.id)}">FINALIZAR PEDIDO</button>`:order.status==='Concluído'?'<span class="fine-print">PEDIDO FINALIZADO</span>':`<select data-order-status="${htm(order.id)}"><option value="">Atualizar…</option>${reservationStatuses.filter(status=>status!==order.status&&allowedNextStatus(order,status)).map(status=>`<option value="${htm(status)}">${htm(status)}</option>`).join('')}</select>`}</td></tr>`).join('');
-  $('#adminContent').innerHTML=`<div class="section-kicker">RESERVAS / TEMPO REAL</div><h2>PEDIDOS</h2><div class="admin-cards"><div class="metric"><span>AGUARDANDO CONFIRMAÇÃO</span><strong>${pending}</strong></div><div class="metric"><span>SOLICITAÇÕES CARREGADAS</span><strong>${orders.length}</strong></div><div class="metric"><span>VENDAS ENCERRADAS</span><strong>${orders.filter(order=>order.status==='Concluído').length}</strong></div></div>${rows?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>CÓDIGO</th><th>CLIENTE</th><th>DATA</th><th>VALOR</th><th>STATUS</th><th>WHATSAPP</th><th>AÇÃO</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty-state">NENHUMA SOLICITAÇÃO RECEBIDA.</div>'}<p class="fine-print">Solicitações pendentes não reduzem estoque. A confirmação valida e atualiza o estoque em uma transação. Para finalizar, marque o pedido como entregue e use o botão FINALIZAR PEDIDO; informe canal e forma de pagamento.</p>`;
+  const visibleOrders=orders.filter(isVisibleAfterFinanceReset),pending=visibleOrders.filter(order=>order.status==='Aguardando confirmação').length;
+  const rows=visibleOrders.map(order=>`<tr><td><button class="mini-button" data-order-details="${htm(order.id)}">${htm(order.confirmationCode||order.id)}</button></td><td>${htm(order.customerName)}</td><td>${safeDate(order.createdAt).toLocaleString('pt-BR')}</td><td>${money(order.status==='Concluído'?Number(order.saleTotalCents)/100:displayTotal(order))}</td><td><span class="status ${order.status==='Aguardando confirmação'?'pending':''}">${htm(order.status)}</span></td><td>${whatsappLink(order)}</td><td>${order.status==='Entregue'?`<button class="mini-button primary" data-close-order="${htm(order.id)}">FINALIZAR PEDIDO</button>`:order.status==='Concluído'?'<span class="fine-print">PEDIDO FINALIZADO</span>':`<select data-order-status="${htm(order.id)}"><option value="">Atualizar…</option>${reservationStatuses.filter(status=>status!==order.status&&allowedNextStatus(order,status)).map(status=>`<option value="${htm(status)}">${htm(status)}</option>`).join('')}</select>`}</td></tr>`).join('');
+  $('#adminContent').innerHTML=`<div class="section-kicker">RESERVAS / TEMPO REAL</div><h2>PEDIDOS</h2><div class="admin-cards"><div class="metric"><span>AGUARDANDO CONFIRMAÇÃO</span><strong>${pending}</strong></div><div class="metric"><span>SOLICITAÇÕES ATIVAS</span><strong>${visibleOrders.length}</strong></div><div class="metric"><span>VENDAS ENCERRADAS</span><strong>${visibleOrders.filter(order=>order.status==='Concluído').length}</strong></div></div>${rows?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>CÓDIGO</th><th>CLIENTE</th><th>DATA</th><th>VALOR</th><th>STATUS</th><th>WHATSAPP</th><th>AÇÃO</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty-state">NENHUMA SOLICITAÇÃO RECEBIDA.</div>'}${financeBaselineAt?'<p class="fine-print">Pedidos concluídos ou cancelados anteriores à redefinição foram arquivados da visão do painel. Os registros permanecem salvos para consulta e auditoria.</p>':''}<p class="fine-print">Solicitações pendentes não reduzem estoque. A confirmação valida e atualiza o estoque em uma transação. Para finalizar, marque o pedido como entregue e use o botão FINALIZAR PEDIDO; informe canal e forma de pagamento.</p>`;
   $$('[data-order-details]').forEach(button=>button.onclick=()=>showOrderDetails(orders.find(order=>order.id===button.dataset.orderDetails)));
   $$('[data-close-order]').forEach(button=>button.onclick=()=>closeOrderDialog(button.dataset.closeOrder));
   $$('[data-order-status]').forEach(select=>select.onchange=async()=>{if(!select.value)return;select.disabled=true;try{await changeReservationStatus(select.dataset.orderStatus,select.value);toast('Status atualizado.');}catch(error){console.error(error);toast(friendlyFirestoreError(error));select.disabled=false;}});
@@ -742,13 +807,24 @@ async function finalizeReservationSale(orderId,sale) {
     const order=snapshot.data();
     if(order.status!=='Entregue'||order.salesChannel||order.closedAt)throw new Error('O pedido precisa estar entregue e ainda não encerrado.');
     if(!salesChannels.includes(sale.salesChannel)||!paymentMethods.includes(sale.paymentMethod))throw new Error('Selecione um canal e uma forma de pagamento válidos.');
+    const couponRef=order.couponCode?doc(db,'coupons',order.couponCode):null;
+    const couponSnapshot=couponRef?await transaction.get(couponRef):null;
     const installmentValueCents=Math.floor(sale.saleTotalCents/sale.installmentCount);
     const finalInstallmentValueCents=sale.saleTotalCents-installmentValueCents*(sale.installmentCount-1);
     transaction.update(orderRef,{
       ...sale,installmentValueCents,finalInstallmentValueCents,
       status:'Concluído',statusHistory:[...(order.statusHistory||[]),'Concluído'],
+      ...(order.couponCode?{couponReserved:false,couponCounted:true}:{}),
       closedAt:serverTimestamp(),updatedAt:serverTimestamp()
     });
+    if(couponSnapshot?.exists()){
+      const coupon=couponSnapshot.data(),wasReserved=order.couponReserved===true,wasCounted=order.couponCounted===true;
+      transaction.update(couponRef,{
+        uses:Number(coupon.uses||0)+(wasCounted?0:1),
+        reservedUses:Math.max(0,Number(coupon.reservedUses||0)-(wasReserved?1:0)),
+        updatedAt:serverTimestamp()
+      });
+    }
   });
 }
 
@@ -759,6 +835,9 @@ async function changeReservationStatus(orderId,nextStatus) {
     if(!snapshot.exists())throw new Error('Solicitação não encontrada.');
     const order={...snapshot.data(),id:snapshot.id};
     if(!allowedNextStatus(order,nextStatus))throw new Error('Esta mudança de status não é permitida.');
+    const releaseCoupon=nextStatus==='Cancelado'&&order.couponReserved===true&&Boolean(order.couponCode);
+    const couponRef=releaseCoupon?doc(db,'coupons',order.couponCode):null;
+    const couponSnapshot=couponRef?await transaction.get(couponRef):null;
     const grouped=new Map();
     for(const item of order.items||[])grouped.set(item.productId,(grouped.get(item.productId)||0)+Number(item.quantity));
     const productRefs=[...grouped.keys()].map(id=>doc(db,'products',id));
@@ -778,7 +857,12 @@ async function changeReservationStatus(orderId,nextStatus) {
       const updated={status:nextStatus,statusHistory:[...(order.statusHistory||[order.status]),nextStatus],updatedAt:serverTimestamp()};
     if(willConfirm){updated.stockApplied=true;updated.confirmedAt=serverTimestamp();}
     if(willCancel){updated.stockApplied=false;updated.stockRestored=true;updated.cancelledAt=serverTimestamp();}
+    if(releaseCoupon)updated.couponReserved=false;
     transaction.update(orderRef,updated);
+    if(couponSnapshot?.exists()){
+      const coupon=couponSnapshot.data();
+      transaction.update(couponRef,{reservedUses:Math.max(0,Number(coupon.reservedUses||0)-1),updatedAt:serverTimestamp()});
+    }
   });
 }
 
@@ -901,12 +985,32 @@ function messageWhatsappLink(message) {
   return `<a class="mini-button" href="https://wa.me/${number}?text=${encodeURIComponent(text)}" target="_blank" rel="noopener noreferrer" aria-label="Conversar com ${htm(message.name)} pelo WhatsApp">WHATSAPP ↗</a>`;
 }
 
+function getAdminPassersby() {
+  const customerUids=new Set(customers.map(customer=>String(customer.uid||customer.id||'')));
+  const customerPhones=new Set(customers.map(customer=>normalizeBrazilPhone(customer.phone)).filter(Boolean));
+  const grouped=new Map();
+  for(const order of orders){
+    const phone=normalizeBrazilPhone(order.phone),uid=String(order.uid||'');
+    if((uid&&customerUids.has(uid))||(phone&&customerPhones.has(phone)))continue;
+    const key=phone?`phone:${phone}`:`uid:${uid||order.id}`;
+    const current=grouped.get(key)||{key,name:order.customerName||'Visitante',phone:order.phone||'',count:0,latest:order};
+    current.count++;
+    if(safeDate(order.createdAt)>safeDate(current.latest.createdAt)){current.latest=order;current.name=order.customerName||current.name;current.phone=order.phone||current.phone;}
+    grouped.set(key,current);
+  }
+  return [...grouped.values()].sort((a,b)=>safeDate(b.latest.createdAt)-safeDate(a.latest.createdAt));
+}
+
 function renderAdminCustomers() {
   const needle=adminVipSearch.trim().toLowerCase();
   const filteredVip=vipUsers.filter(member=>`${member.name||''} ${member.email||''} ${member.phone||''}`.toLowerCase().includes(needle));
   const vipRows=filteredVip.map(member=>`<tr><td>${htm(member.name)}</td><td>${htm(member.email)}</td><td>${htm(member.phone||'—')}</td><td>${member.status==='active'?'ATIVO':'INATIVO'}</td><td>${safeDate(member.createdAt).toLocaleDateString('pt-BR')}</td><td><button class="mini-button ${member.status==='active'?'danger':'primary'}" data-vip-status="${htm(member.uid)}" data-next-status="${member.status==='active'?'removed':'active'}">${member.status==='active'?'REMOVER VIP':'REATIVAR VIP'}</button></td></tr>`).join('');
-  const customerRows=customers.map(customer=>[htm(customer.name),htm(customer.email),htm(customer.phone),customer.marketingConsent?'ACEITOU':'NÃO ACEITOU',safeDate(customer.createdAt).toLocaleDateString('pt-BR'),`<button class="mini-button danger" data-delete-customer="${htm(customer.uid||customer.id)}">EXCLUIR CADASTRO</button>`]);
-  $('#adminContent').innerHTML=`<div class="section-kicker">CLIENTES / COMUNIDADE VIP</div><h2>CLIENTES E MEMBROS VIP</h2><p>Remover VIP desativa a associação sem apagar o cliente. Excluir a ficha do cliente também remove a associação VIP; pedidos e histórico financeiro permanecem.</p><div class="admin-toolbar"><span>${customers.length} contas · ${vipUsers.filter(member=>member.status==='active').length} membros VIP ativos</span><div><button id="vipInviteSetup" class="mini-button">CONFIGURAR LINK DO GRUPO</button> <button id="newVipMember" class="mini-button primary">+ CADASTRAR VIP</button></div></div><section class="finance-panel"><h3>MEMBROS VIP</h3><div class="admin-filter-bar"><label>BUSCAR NOME, E-MAIL OU TELEFONE<input id="adminVipSearch" type="search" value="${htm(adminVipSearch)}" placeholder="Digite para filtrar"></label></div>${filteredVip.length?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>NOME</th><th>E-MAIL</th><th>WHATSAPP</th><th>ACESSO</th><th>CADASTRO</th><th>AÇÕES</th></tr></thead><tbody>${vipRows}</tbody></table></div>`:'<div class="empty-state">NENHUM MEMBRO VIP CORRESPONDE À BUSCA.</div>'}</section><section class="finance-panel"><h3>CONTAS CADASTRADAS</h3>${customerRows.length?table(['NOME','E-MAIL','WHATSAPP','OFERTAS','CADASTRO','AÇÕES'],customerRows):'<div class="empty-state">NENHUMA CONTA CADASTRADA. RESERVAS DE VISITANTES FICAM NA ABA PEDIDOS.</div>'}</section>`;
+  const filteredCustomers=customers.filter(customer=>`${customer.name||''} ${customer.email||''} ${customer.phone||''}`.toLowerCase().includes(needle));
+  const customerRows=filteredCustomers.map(customer=>[htm(customer.name),htm(customer.email),htm(customer.phone),customer.marketingConsent?'ACEITOU':'NÃO ACEITOU',safeDate(customer.createdAt).toLocaleDateString('pt-BR'),`<button class="mini-button danger" data-delete-customer="${htm(customer.uid||customer.id)}">EXCLUIR CADASTRO</button>`]);
+  const digitsNeedle=normalizeBrazilPhone(adminVipSearch);
+  const filteredVisitors=getAdminPassersby().filter(visitor=>`${visitor.name} ${visitor.phone} ${visitor.latest.confirmationCode||visitor.latest.id} ${visitor.latest.status||''}`.toLowerCase().includes(needle)||(digitsNeedle.length>=4&&normalizeBrazilPhone(visitor.phone).includes(digitsNeedle)));
+  const visitorRows=filteredVisitors.map(visitor=>[htm(visitor.name),htm(visitor.phone||'—'),`${visitor.count} solicitação(ões)`,`${htm(visitor.latest.confirmationCode||visitor.latest.id)} · ${htm(visitor.latest.status||'')}`,safeDate(visitor.latest.createdAt).toLocaleDateString('pt-BR'),whatsappLink(visitor.latest)]);
+  $('#adminContent').innerHTML=`<div class="section-kicker">CLIENTES / COMUNIDADE VIP</div><h2>CLIENTES E MEMBROS VIP</h2><p>Remover VIP desativa a associação sem apagar o cliente. Excluir a ficha do cliente também remove a associação VIP; pedidos e histórico financeiro permanecem.</p><div class="admin-toolbar"><span>${customers.length} contas · ${vipUsers.filter(member=>member.status==='active').length} membros VIP ativos · ${getAdminPassersby().length} passantes</span><div><button id="vipInviteSetup" class="mini-button">CONFIGURAR LINK DO GRUPO</button> <button id="newVipMember" class="mini-button primary">+ CADASTRAR VIP</button></div></div><div class="admin-filter-bar"><label>BUSCAR CLIENTE OU PASSANTE POR NOME, E-MAIL, TELEFONE OU PEDIDO<input id="adminVipSearch" type="search" value="${htm(adminVipSearch)}" placeholder="Digite nome, e-mail, telefone ou código"></label></div><section class="finance-panel"><h3>MEMBROS VIP · ${filteredVip.length}</h3>${filteredVip.length?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>NOME</th><th>E-MAIL</th><th>WHATSAPP</th><th>ACESSO</th><th>CADASTRO</th><th>AÇÕES</th></tr></thead><tbody>${vipRows}</tbody></table></div>`:'<div class="empty-state">NENHUM MEMBRO VIP CORRESPONDE À BUSCA.</div>'}</section><section class="finance-panel"><h3>CONTAS CADASTRADAS · ${filteredCustomers.length}</h3>${filteredCustomers.length?table(['NOME','E-MAIL','WHATSAPP','OFERTAS','CADASTRO','AÇÕES'],customerRows):'<div class="empty-state">NENHUMA CONTA CADASTRADA CORRESPONDE À BUSCA.</div>'}</section><section class="finance-panel"><h3>PASSANTES COM SOLICITAÇÕES · ${filteredVisitors.length}</h3>${filteredVisitors.length?table(['NOME','WHATSAPP','RESERVAS','ÚLTIMA SOLICITAÇÃO','DATA','CONTATO'],visitorRows):'<div class="empty-state">NENHUM PASSANTE COM RESERVA CORRESPONDE À BUSCA.</div>'}<p class="fine-print">A busca considera até 500 contas e as 250 solicitações mais recentes sincronizadas pelo painel.</p></section>`;
   $('#adminVipSearch').oninput=event=>{adminVipSearch=event.target.value;renderAdminCustomers();const input=$('#adminVipSearch');input?.focus();input?.setSelectionRange(adminVipSearch.length,adminVipSearch.length);};
   $('#vipInviteSetup').onclick=configureVipInvite;
   $('#newVipMember').onclick=manualVipEditor;
@@ -1042,7 +1146,8 @@ function offerEditor(kind) {
     <div class="offer-editor-layout">
       <form id="offerEditorForm" class="modal-form offer-editor-form">
         ${coupon?`<label>CÓDIGO DO CUPOM<input name="code" maxlength="30" pattern="[A-Za-z0-9_-]{3,30}" autocomplete="off" placeholder="Ex.: GRACA10" required><small>Use de 3 a 30 letras, números, hífen ou sublinhado.</small></label>
-          <label>DESCONTO (%)<input name="value" type="number" min="1" max="99" step="1" value="10" required></label>`:
+          <label>DESCONTO (%)<input name="value" type="number" min="1" max="99" step="1" value="10" required></label>
+          <label>QUANTIDADE MÁXIMA DE USOS (OPCIONAL)<input name="maxUses" type="number" min="1" max="1000000" step="1" placeholder="Sem limite"><small>O sistema conta reservas em andamento e vendas finalizadas.</small></label>`:
           `<label>TÍTULO DA CAMPANHA<input name="title" maxlength="120" placeholder="Ex.: Semana da Comunidade" required></label>
           <label>DESCRIÇÃO E CONDIÇÕES<textarea name="description" rows="5" maxlength="500" placeholder="Explique o período, as peças e as condições da campanha." required></textarea><small>Até 500 caracteres.</small></label>`}
         <label>VISIBILIDADE<select name="status">${coupon?'<option value="published">Publicar agora para clientes VIP</option><option value="draft">Salvar como rascunho</option>':'<option value="draft">Salvar como rascunho</option><option value="published">Publicar agora para clientes VIP</option>'}</select></label>
@@ -1081,11 +1186,14 @@ function offerEditor(kind) {
     save.disabled=true;save.textContent='SALVANDO…';
     try{
       if(coupon){
-        const normalized=normalizeCouponCode(code.value), percentage=Number(value.value);
+        const normalized=normalizeCouponCode(code.value), percentage=Number(value.value),maxUsesRaw=String(form.elements.maxUses?.value||'').trim(),maxUses=maxUsesRaw?Number(maxUsesRaw):null;
         if(!/^[A-Z0-9_-]{3,30}$/.test(normalized)||!Number.isInteger(percentage)||percentage<1||percentage>99)throw new Error('Confira o código e o desconto de 1 a 99%.');
+        if(maxUses!==null&&(!Number.isInteger(maxUses)||maxUses<1||maxUses>1000000))throw new Error('A quantidade máxima deve ser um número inteiro entre 1 e 1.000.000.');
         const reference=doc(db,'coupons',normalized);
         if((await getDoc(reference)).exists())throw new Error('Já existe um cupom com esse código. Escolha outro.');
-        await setDoc(reference,{code:normalized,value:percentage,status,uses:0,reservedUses:0,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
+        const couponData={code:normalized,value:percentage,status,uses:0,reservedUses:0,createdAt:serverTimestamp(),updatedAt:serverTimestamp()};
+        if(maxUses!==null)couponData.maxUses=maxUses;
+        await setDoc(reference,couponData);
       } else {
         const campaignName=String(campaignTitle.value||'').trim(), campaignDescription=String(description.value||'').trim();
         if(!campaignName||campaignName.length>120||campaignDescription.length<1||campaignDescription.length>500)throw new Error('Preencha o título e a descrição (até 500 caracteres).');
@@ -1102,7 +1210,7 @@ function renderAdminBenefits() {
   $('#adminContent').innerHTML='<div class="section-kicker">COMUNIDADE / PUBLICAÇÕES</div><h2>BENEFÍCIOS VIP</h2><p>Crie benefícios com uma prévia antes de salvar. Só itens publicados aparecem para membros com e-mail confirmado.</p><div class="admin-toolbar"><button id="newVipCoupon" class="mini-button primary">+ NOVO CUPOM</button><button id="newVipCampaign" class="mini-button">+ NOVA CAMPANHA</button></div><section class="offer-list-panel"><h3>CUPONS</h3><div id="adminCoupons" class="empty-state">CARREGANDO…</div></section><section class="offer-list-panel"><h3>CAMPANHAS</h3><div id="adminCampaigns" class="empty-state">CARREGANDO…</div></section>';
   const renderLists=(coupons,campaigns)=>{
     if(!$('#adminCoupons'))return;
-    $('#adminCoupons').innerHTML=coupons.length?table(['CÓDIGO','DESCONTO','STATUS','AÇÕES'],coupons.map(c=>[htm(c.code),`${Number(c.value||0)}%`,c.status==='published'?'PUBLICADO':'RASCUNHO',`<div class="admin-actions"><button class="mini-button" data-toggle-coupon="${htm(c.id)}">${c.status==='published'?'DESPUBLICAR':'PUBLICAR'}</button><button class="mini-button danger" data-delete-offer="coupons:${htm(c.id)}">EXCLUIR</button></div>`])):'<div class="empty-state">NENHUM CUPOM CADASTRADO.</div>';
+    $('#adminCoupons').innerHTML=coupons.length?table(['CÓDIGO','DESCONTO','USOS / LIMITE','STATUS','AÇÕES'],coupons.map(c=>[htm(c.code),`${Number(c.value||0)}%`,couponUsageLabel(c),c.status==='published'?'PUBLICADO':'RASCUNHO',`<div class="admin-actions"><button class="mini-button" data-toggle-coupon="${htm(c.id)}">${c.status==='published'?'DESPUBLICAR':'PUBLICAR'}</button><button class="mini-button danger" data-delete-offer="coupons:${htm(c.id)}">EXCLUIR</button></div>`])):'<div class="empty-state">NENHUM CUPOM CADASTRADO.</div>';
     $('#adminCampaigns').innerHTML=campaigns.length?table(['CAMPANHA','DESCRIÇÃO','STATUS','AÇÕES'],campaigns.map(c=>[htm(c.title),htm(c.description),c.status==='published'?'PUBLICADA':'RASCUNHO',`<div class="admin-actions"><button class="mini-button" data-toggle-campaign="${htm(c.id)}">${c.status==='published'?'DESPUBLICAR':'PUBLICAR'}</button><button class="mini-button danger" data-delete-offer="campaigns:${htm(c.id)}">EXCLUIR</button></div>`])):'<div class="empty-state">NENHUMA CAMPANHA CADASTRADA.</div>';
     $$('[data-toggle-coupon]').forEach(button=>button.onclick=()=>toggleOffer('coupons',button.dataset.toggleCoupon,coupons));
     $$('[data-toggle-campaign]').forEach(button=>button.onclick=()=>toggleOffer('campaigns',button.dataset.toggleCampaign,campaigns));
@@ -1140,7 +1248,7 @@ async function toggleOffer(collectionName,id,items) {
 function renderAdminOverview(el) {
   const pending=orders.filter(order=>order.status==='Aguardando confirmação').length;
   const inProgress=orders.filter(order=>['Reserva confirmada','Em preparação','Disponível para retirada','Em rota de entrega','Entregue'].includes(order.status)).length;
-  const recent=orders.slice(0,8);
+  const recent=orders.filter(isVisibleAfterFinanceReset).slice(0,8);
   el.innerHTML=`<div class="section-kicker">GRAÇA / PAINEL</div><h2>VISÃO GERAL</h2><p>Atalhos e indicadores da operação diária.</p><div class="admin-cards"><div class="metric"><span>PRODUTOS PUBLICADOS</span><strong>${activeProducts().length}</strong></div><div class="metric"><span>AGUARDANDO CONFIRMAÇÃO</span><strong>${pending}</strong></div><div class="metric"><span>EM ATENDIMENTO</span><strong>${inProgress}</strong></div><div class="metric"><span>CONTAS VIP</span><strong>${customers.length}</strong></div></div><div class="admin-toolbar"><div class="admin-shortcuts"><button class="mini-button primary" data-admin-shortcut="orders">ABRIR PEDIDOS</button><button class="mini-button" data-admin-shortcut="products">GERENCIAR PRODUTOS</button><button class="mini-button" data-admin-shortcut="analytics">ABRIR FINANCEIRO</button></div><button class="mini-button" id="enableAdminAlerts">ATIVAR AVISOS NESTE DISPOSITIVO</button></div><h3>ÚLTIMAS SOLICITAÇÕES</h3>${recent.length?table(['CÓDIGO','CLIENTE','DATA','VALOR ESTIMADO','STATUS'],recent.map(order=>[htm(order.confirmationCode||order.id),htm(order.customerName),safeDate(order.createdAt).toLocaleDateString('pt-BR'),money(displayTotal(order)),htm(order.status)])):'<div class="empty-state">AS NOVAS SOLICITAÇÕES APARECERÃO AQUI EM TEMPO REAL.</div>'}<p class="fine-print">Com a aba do painel aberta, novas solicitações atualizam esta tela e geram um aviso neste navegador. O botão de WhatsApp abre uma mensagem pronta, que ainda precisa ser enviada pela pessoa que reservou.</p>`;
   $$('[data-admin-shortcut]').forEach(button=>button.onclick=()=>{adminTab=button.dataset.adminShortcut;renderAdmin();});
   $('#enableAdminAlerts').onclick=async()=>{
@@ -1165,8 +1273,38 @@ function getFinanceSales() {
   return orders.filter(order=>{
     if(order.status!=='Concluído'||!order.closedAt)return false;
     const closed=safeDate(order.closedAt);
+    if(financeBaselineAt&&closed<financeBaselineAt)return false;
     return (!from||closed>=from)&&(!to||closed<=to);
   });
+}
+
+function isVisibleAfterFinanceReset(order) {
+  if(!financeBaselineAt)return true;
+  const created=safeDate(order.createdAt);
+  const archivedStatus=['Concluído','Cancelado'].includes(order.status);
+  return !archivedStatus||created>=financeBaselineAt;
+}
+
+function openFinanceResetDialog() {
+  const user=auth.currentUser;
+  if(!isAdmin||!user?.email||user.isAnonymous)return toast('Entre novamente na conta administrativa para redefinir o financeiro.');
+  openModal(`<div class="section-kicker">FINANCEIRO / NOVO CICLO</div><h2 id="modalTitle">REDEFINIR FINANCEIRO.</h2><p>Os relatórios começarão em zero a partir de agora. Pedidos concluídos ou cancelados anteriores serão arquivados desta visão do painel; as fichas originais continuarão guardadas no Firestore para consulta e auditoria.</p><form id="financeResetForm" class="modal-form"><label>CONTA ADMINISTRATIVA<input value="${htm(user.email)}" readonly></label><label>CONFIRME SUA SENHA<input name="password" type="password" autocomplete="current-password" minlength="6" required></label><button class="pill-button dark" id="confirmFinanceReset">CONFIRMAR NOVO INÍCIO ↗</button></form>`);
+  const form=$('#financeResetForm');
+  form.onsubmit=async event=>{
+    event.preventDefault();
+    const password=String(new FormData(form).get('password')||''),button=$('#confirmFinanceReset');
+    if(!password)return toast('Digite a senha da conta administrativa.');
+    button.disabled=true;button.textContent='CONFIRMANDO…';
+    try{
+      const activeUser=auth.currentUser;
+      if(!activeUser||activeUser.uid!==user.uid||!activeUser.email)throw new Error('A sessão administrativa mudou. Entre novamente e tente de novo.');
+      await reauthenticateWithCredential(activeUser,EmailAuthProvider.credential(activeUser.email,password));
+      if(!await hasAdminAccess(activeUser))throw new Error('Esta conta não possui autorização administrativa.');
+      await setDoc(doc(db,'settings','finance'),{baselineAt:serverTimestamp(),resetBy:activeUser.uid,updatedAt:serverTimestamp()});
+      const saved=await getDoc(doc(db,'settings','finance'));
+      financeBaselineAt=saved.exists()?safeDate(saved.data().baselineAt):new Date();closeModal();renderAdminContent();toast('Financeiro e histórico do painel reiniciados. Os registros antigos foram preservados.');
+    }catch(error){console.error('Falha ao redefinir o marco financeiro:',error);toast(error?.code==='auth/invalid-credential'||error?.code==='auth/wrong-password'?'A senha não confere. Tente novamente.':friendlyFirestoreError(error));button.disabled=false;button.textContent='CONFIRMAR NOVO INÍCIO ↗';}
+  };
 }
 
 function exportFinanceCsv(sales) {
@@ -1202,10 +1340,11 @@ function renderFinanceAnalytics(el) {
   const paymentEntries=[...payments.entries()].sort((a,b)=>b[1].revenueCents-a[1].revenueCents),channelEntries=[...channels.entries()].sort((a,b)=>b[1].revenueCents-a[1].revenueCents);
   const topProducts=[...itemsByProduct.values()].sort((a,b)=>b.quantity-a.quantity).slice(0,10);
   const productRows=topProducts.map(product=>{const margin=product.costKnown?`${money(product.marginCents/100)}${product.revenueCents?` · ${((product.marginCents/product.revenueCents)*100).toFixed(1)}%`:''}`:'Cadastre o custo atual';return [htm(product.name),String(product.quantity),money(product.revenueCents/100),htm(margin)];});
-  el.innerHTML=`<div class="section-kicker">GESTÃO / FINANCEIRO</div><h2>ANÁLISE FINANCEIRA</h2><p>Relatórios de vendas encerradas, valores finais e formas de pagamento.</p><div class="finance-filters"><label>DE <input id="financeFrom" type="date" value="${htm(analyticsFrom)}"></label><label>ATÉ <input id="financeTo" type="date" value="${htm(analyticsTo)}"></label><button id="exportFinanceCsv" class="mini-button primary">BAIXAR RELATÓRIO CSV</button></div><div class="admin-cards finance-summary"><div class="metric"><span>FATURAMENTO NO PERÍODO</span><strong>${money(totalCents/100)}</strong></div><div class="metric"><span>VENDAS ENCERRADAS</span><strong>${count}</strong></div><div class="metric"><span>TICKET MÉDIO</span><strong>${money(average/100)}</strong></div></div><div class="finance-charts">${renderFinanceBars('VENDAS POR FORMA DE PAGAMENTO',paymentEntries,totalCents)}${renderFinanceBars('VENDAS POR CANAL',channelEntries,totalCents)}</div><section class="finance-panel"><h3>PRODUTOS MAIS VENDIDOS E DESEMPENHO</h3>${productRows.length?table(['PRODUTO','UNIDADES','RECEITA ALOCADA','MARGEM ESTIMADA'],productRows):'<div class="empty-state">AS VENDAS ENCERRADAS MOSTRARÃO OS PRODUTOS AQUI.</div>'}<p class="fine-print">A margem usa o custo atual cadastrado no produto, não um custo histórico gravado no pedido. Atualize os custos para melhorar a estimativa.</p></section><section class="finance-panel"><h3>RELATÓRIO DETALHADO DE VENDAS</h3>${sales.length?table(['CÓDIGO','DATA','CLIENTE','VALOR','CANAL','PAGAMENTO'],sales.map(order=>[htm(order.confirmationCode||order.id),safeDate(order.closedAt).toLocaleDateString('pt-BR'),htm(order.customerName),money(Number(order.saleTotalCents)/100),htm(order.salesChannel),htm(order.paymentMethod)])):'<div class="empty-state">NENHUMA VENDA ENCERRADA NESTE PERÍODO.</div>'}</section><p class="fine-print">A tela soma até as 250 solicitações mais recentes carregadas no painel. Use o filtro de datas; o CSV contém as vendas encerradas carregadas nesse mesmo limite.</p>`;
+  el.innerHTML=`<div class="section-kicker">GESTÃO / FINANCEIRO</div><h2>ANÁLISE FINANCEIRA</h2><p>Relatórios de vendas encerradas, valores finais e formas de pagamento.</p><div class="finance-filters"><label>DE <input id="financeFrom" type="date" value="${htm(analyticsFrom)}"></label><label>ATÉ <input id="financeTo" type="date" value="${htm(analyticsTo)}"></label><button id="exportFinanceCsv" class="mini-button primary">BAIXAR RELATÓRIO CSV</button><button id="financeReset" class="mini-button danger">REDEFINIR FINANCEIRO</button></div>${financeBaselineAt?`<p class="fine-print">Relatórios e pedidos encerrados exibidos desde ${financeBaselineAt.toLocaleString('pt-BR')}. Dados anteriores preservados.</p>`:''}<div class="admin-cards finance-summary"><div class="metric"><span>FATURAMENTO NO PERÍODO</span><strong>${money(totalCents/100)}</strong></div><div class="metric"><span>VENDAS ENCERRADAS</span><strong>${count}</strong></div><div class="metric"><span>TICKET MÉDIO</span><strong>${money(average/100)}</strong></div></div><div class="finance-charts">${renderFinanceBars('VENDAS POR FORMA DE PAGAMENTO',paymentEntries,totalCents)}${renderFinanceBars('VENDAS POR CANAL',channelEntries,totalCents)}</div><section class="finance-panel"><h3>PRODUTOS MAIS VENDIDOS E DESEMPENHO</h3>${productRows.length?table(['PRODUTO','UNIDADES','RECEITA ALOCADA','MARGEM ESTIMADA'],productRows):'<div class="empty-state">AS VENDAS ENCERRADAS MOSTRARÃO OS PRODUTOS AQUI.</div>'}<p class="fine-print">A margem usa o custo atual cadastrado no produto, não um custo histórico gravado no pedido. Atualize os custos para melhorar a estimativa.</p></section><section class="finance-panel"><h3>RELATÓRIO DETALHADO DE VENDAS</h3>${sales.length?table(['CÓDIGO','DATA','CLIENTE','VALOR','CANAL','PAGAMENTO'],sales.map(order=>[htm(order.confirmationCode||order.id),safeDate(order.closedAt).toLocaleDateString('pt-BR'),htm(order.customerName),money(Number(order.saleTotalCents)/100),htm(order.salesChannel),htm(order.paymentMethod)])):'<div class="empty-state">NENHUMA VENDA ENCERRADA NESTE PERÍODO.</div>'}</section><p class="fine-print">A tela soma até as 250 solicitações mais recentes carregadas no painel. Use o filtro de datas; o CSV contém as vendas encerradas carregadas nesse mesmo limite.</p>`;
   $('#financeFrom').onchange=event=>{analyticsFrom=event.target.value;renderFinanceAnalytics(el);};
   $('#financeTo').onchange=event=>{analyticsTo=event.target.value;renderFinanceAnalytics(el);};
   $('#exportFinanceCsv').onclick=()=>exportFinanceCsv(sales);
+  $('#financeReset').onclick=openFinanceResetDialog;
 }
 
 renderComments = function() {

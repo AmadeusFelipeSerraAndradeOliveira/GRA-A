@@ -158,6 +158,8 @@ service cloud.firestore {
     }
 
     function validReservationItem(item) {
+      let productPath = /databases/$(database)/documents/products/$(item.productId);
+      let product = get(productPath).data;
       return item is map
         && item.keys().hasOnly(['productId', 'name', 'size', 'quantity', 'unitPriceCents'])
         && item.keys().hasAll(['productId', 'name', 'size', 'quantity', 'unitPriceCents'])
@@ -167,15 +169,14 @@ service cloud.firestore {
         && item.size is string && item.size.size() > 0 && item.size.size() <= 40
         && item.quantity is int && item.quantity > 0 && item.quantity <= 20
         && item.unitPriceCents is int && item.unitPriceCents > 0
-        && productExists(item.productId)
-        && get(/databases/$(database)/documents/products/$(item.productId)).data.active == true
-        && get(/databases/$(database)/documents/products/$(item.productId)).data.name == item.name
-        && get(/databases/$(database)/documents/products/$(item.productId)).data.sizes.hasAny([item.size])
-        && item.quantity <= get(/databases/$(database)/documents/products/$(item.productId)).data.stock
+        && exists(productPath)
+        && product.active == true
+        && product.name == item.name
+        && product.sizes.hasAny([item.size])
+        && item.quantity <= product.stock
         && item.unitPriceCents == math.round(
-          get(/databases/$(database)/documents/products/$(item.productId)).data.price
-          * (100 - (('discount' in get(/databases/$(database)/documents/products/$(item.productId)).data)
-            ? get(/databases/$(database)/documents/products/$(item.productId)).data.discount : 0))
+          product.price
+          * (100 - (('discount' in product) ? product.discount : 0))
         );
     }
 
@@ -189,36 +190,15 @@ service cloud.firestore {
         && (items.size() < 6 || validReservationItem(items[5]));
     }
 
-    function validReservationCoupon(data) {
-      let path = /databases/$(database)/documents/coupons/$(data.couponCode);
-      return (data.couponCode == '' && data.couponPercent == 0 && data.discountCents == 0)
-        || (isActiveVip()
-          && data.couponCode.matches('^[A-Z0-9_-]{3,30}$')
-          && data.couponPercent >= 1 && data.couponPercent <= 99
-          && exists(path)
-          && get(path).data.status == 'published'
-          && get(path).data.value == data.couponPercent
-          && (!('maxUses' in get(path).data)
-            || get(path).data.uses + get(path).data.reservedUses < get(path).data.maxUses));
-    }
-
     function validReservationTotal(data) {
-      let subtotal = data.items[0].unitPriceCents * data.items[0].quantity
-          + (data.items.size() > 1 ? data.items[1].unitPriceCents * data.items[1].quantity : 0)
-          + (data.items.size() > 2 ? data.items[2].unitPriceCents * data.items[2].quantity : 0)
-          + (data.items.size() > 3 ? data.items[3].unitPriceCents * data.items[3].quantity : 0)
-          + (data.items.size() > 4 ? data.items[4].unitPriceCents * data.items[4].quantity : 0)
-          + (data.items.size() > 5 ? data.items[5].unitPriceCents * data.items[5].quantity : 0);
-      return data.totalCents is int && data.totalCents >= 0
-        && ((!('couponCode' in data) && !('couponPercent' in data) && !('subtotalCents' in data) && !('discountCents' in data)
-            && data.totalCents == subtotal && data.totalCents > 0)
-          || (data.keys().hasAll(['couponCode', 'couponPercent', 'subtotalCents', 'discountCents'])
-            && data.couponCode is string && data.couponPercent is int
-            && data.subtotalCents is int && data.subtotalCents == subtotal
-            && data.discountCents is int && data.couponPercent >= 0 && data.couponPercent <= 99
-            && data.discountCents == math.round(data.subtotalCents * data.couponPercent / 100)
-            && data.totalCents == data.subtotalCents - data.discountCents
-            && validReservationCoupon(data)));
+      let items = data.items;
+      let subtotal = (items.size() > 0 ? items[0].quantity * items[0].unitPriceCents : 0)
+        + (items.size() > 1 ? items[1].quantity * items[1].unitPriceCents : 0)
+        + (items.size() > 2 ? items[2].quantity * items[2].unitPriceCents : 0)
+        + (items.size() > 3 ? items[3].quantity * items[3].unitPriceCents : 0)
+        + (items.size() > 4 ? items[4].quantity * items[4].unitPriceCents : 0)
+        + (items.size() > 5 ? items[5].quantity * items[5].unitPriceCents : 0);
+      return data.totalCents is int && data.totalCents == subtotal && data.totalCents > 0;
     }
 
     function validAddress(data) {
@@ -239,7 +219,7 @@ service cloud.firestore {
     function validReservation(data) {
       return signedIn()
         && data.keys().hasAll(['uid', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'subtotalCents', 'discountCents', 'couponCode', 'couponPercent', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt'])
         && data.uid == request.auth.uid
         && data.confirmationCode is string && data.confirmationCode.size() >= 10 && data.confirmationCode.size() <= 32
         && data.customerName is string && data.customerName.size() > 0 && data.customerName.size() <= 120
@@ -307,8 +287,6 @@ service cloud.firestore {
         && (!('couponPercent' in resource.data) || data.couponPercent == resource.data.couponPercent)
         && (!('couponReserved' in data) || data.couponReserved is bool)
         && (!('couponCounted' in data) || data.couponCounted is bool)
-        && (!('couponReserved' in resource.data) || ('couponReserved' in data && data.couponReserved == resource.data.couponReserved))
-        && (!('couponCounted' in resource.data) || ('couponCounted' in data && data.couponCounted == resource.data.couponCounted))
         && (!('subtotalCents' in resource.data) || data.subtotalCents == resource.data.subtotalCents)
         && (!('discountCents' in resource.data) || data.discountCents == resource.data.discountCents)
         && data.deliveryMethod == resource.data.deliveryMethod
@@ -346,14 +324,110 @@ service cloud.firestore {
 
     function validCoupon(data) {
       return data.keys().hasAll(['code', 'value', 'status', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['code', 'value', 'status', 'maxUses', 'uses', 'reservedUses', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['code', 'value', 'status', 'maxUses', 'uses', 'reservedUses', 'lastReservationId', 'createdAt', 'updatedAt'])
         && data.code is string && data.code.size() >= 3 && data.code.size() <= 30
         && data.value is int && data.value >= 1 && data.value <= 99
         && (!('maxUses' in data) || (data.maxUses is int && data.maxUses >= 1 && data.maxUses <= 1000000))
         && (!('uses' in data) || (data.uses is int && data.uses >= 0 && data.uses <= 1000000))
         && (!('reservedUses' in data) || (data.reservedUses is int && data.reservedUses >= 0 && data.reservedUses <= 1000000))
+        && (!('lastReservationId' in data) || (data.lastReservationId is string && data.lastReservationId.size() >= 10 && data.lastReservationId.size() <= 128))
         && data.status in ['draft', 'published']
         && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    function couponLimitUnchanged(oldData, newData) {
+      return ((!('maxUses' in oldData) && !('maxUses' in newData))
+        || ('maxUses' in oldData && 'maxUses' in newData && oldData.maxUses == newData.maxUses));
+    }
+
+    function validAdminCouponUpdate() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return isAdmin()
+        && validCoupon(request.resource.data)
+        && changed.hasOnly(['status', 'uses', 'reservedUses', 'updatedAt'])
+        && request.resource.data.code == resource.data.code
+        && request.resource.data.value == resource.data.value
+        && couponLimitUnchanged(resource.data, request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedAt is timestamp
+        && ((changed.hasOnly(['status', 'updatedAt'])
+            && request.resource.data.status in ['draft', 'published'])
+          || (changed.hasAny(['uses', 'reservedUses'])
+            && request.resource.data.status == resource.data.status));
+    }
+
+    function validCouponReservationUpdate(couponId) {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      let orderId = ('lastReservationId' in request.resource.data ? request.resource.data.lastReservationId : '');
+      let orderPath = /databases/$(database)/documents/orders/$(orderId);
+      let orderExists = exists(orderPath);
+      let order = orderExists ? get(orderPath).data : {};
+      let orderAfterExists = existsAfter(orderPath);
+      let orderAfter = orderAfterExists ? getAfter(orderPath).data : {};
+      return signedIn() && isActiveVip()
+        && resource.data.status == 'published'
+        && validCoupon(request.resource.data)
+        && changed.hasOnly(['reservedUses', 'lastReservationId', 'updatedAt'])
+        && changed.hasAll(['reservedUses', 'lastReservationId'])
+        && request.resource.data.code == couponId
+        && request.resource.data.code == resource.data.code
+        && request.resource.data.value == resource.data.value
+        && couponLimitUnchanged(resource.data, request.resource.data)
+        && request.resource.data.status == resource.data.status
+        && request.resource.data.createdAt == resource.data.createdAt
+        && (('uses' in request.resource.data ? request.resource.data.uses : 0)
+          == ('uses' in resource.data ? resource.data.uses : 0))
+        && request.resource.data.reservedUses
+          == (('reservedUses' in resource.data ? resource.data.reservedUses : 0) + 1)
+        && (!('maxUses' in request.resource.data)
+          || ((('uses' in request.resource.data ? request.resource.data.uses : 0)
+            + request.resource.data.reservedUses) <= request.resource.data.maxUses))
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.lastReservationId is string
+        && request.resource.data.lastReservationId.size() >= 10
+        && request.resource.data.lastReservationId.size() <= 128
+        && request.resource.data.lastReservationId.matches('^[A-Za-z0-9_-]+$')
+        && orderExists
+        && order.uid == request.auth.uid
+        && !('couponCode' in order)
+        && order.totalCents > 0
+        && order.status in ['Aguardando confirmação', 'Reserva confirmada', 'Em preparação', 'Disponível para retirada', 'Em rota de entrega', 'Entregue']
+        && orderAfterExists
+        && orderAfter.couponCode == couponId
+        && orderAfter.couponReserved == true
+        && orderAfter.couponCounted == false
+        && orderAfter.couponPercent == request.resource.data.value
+        && orderAfter.updatedAt == request.time;
+    }
+
+    function validOwnerCouponReservation(orderId) {
+      let couponCode = ('couponCode' in request.resource.data ? request.resource.data.couponCode : '');
+      let couponPath = /databases/$(database)/documents/coupons/$(couponCode);
+      let couponExists = existsAfter(couponPath);
+      let coupon = couponExists ? getAfter(couponPath).data : {};
+      let uses = ('uses' in coupon ? coupon.uses : 0);
+      let reserved = ('reservedUses' in coupon ? coupon.reservedUses : 0);
+      return signedIn()
+        && resource.data.uid == request.auth.uid
+        && resource.data.status in ['Aguardando confirmação', 'Reserva confirmada', 'Em preparação', 'Disponível para retirada', 'Em rota de entrega', 'Entregue']
+        && !('couponCode' in resource.data)
+        && request.resource.data.couponCode is string
+        && request.resource.data.couponCode.matches('^[A-Z0-9_-]{3,30}$')
+        && request.resource.data.couponPercent is int
+        && request.resource.data.couponPercent >= 1 && request.resource.data.couponPercent <= 99
+        && request.resource.data.subtotalCents == resource.data.totalCents
+        && request.resource.data.discountCents is int
+        && request.resource.data.discountCents == math.round(request.resource.data.subtotalCents * request.resource.data.couponPercent / 100)
+        && request.resource.data.totalCents == request.resource.data.subtotalCents - request.resource.data.discountCents
+        && request.resource.data.couponReserved == true && request.resource.data.couponCounted == false
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['couponCode', 'couponPercent', 'subtotalCents', 'discountCents', 'totalCents', 'couponReserved', 'couponCounted', 'updatedAt'])
+        && request.resource.data.updatedAt == request.time
+        && couponExists
+        && coupon.code == request.resource.data.couponCode && coupon.status == 'published'
+        && coupon.value == request.resource.data.couponPercent
+        && coupon.lastReservationId == orderId
+        && reserved >= 1
+        && (!('maxUses' in coupon) || uses + reserved <= coupon.maxUses);
     }
 
     function validCampaign(data) {
@@ -405,6 +479,14 @@ service cloud.firestore {
         && data.inviteUrl is string && data.inviteUrl.size() <= 512
         && (data.inviteUrl == '' || data.inviteUrl.matches('^https://chat\\.whatsapp\\.com/[A-Za-z0-9]+$'))
         && data.updatedAt is timestamp;
+    }
+
+    function validFinanceBaseline(data) {
+      return data.keys().hasAll(['baselineAt', 'resetBy', 'updatedAt'])
+        && data.keys().hasOnly(['baselineAt', 'resetBy', 'updatedAt'])
+        && data.baselineAt is timestamp && data.baselineAt == request.time
+        && data.resetBy == request.auth.uid
+        && data.updatedAt is timestamp && data.updatedAt == request.time;
     }
 
     function validMessageData(data) {
@@ -585,12 +667,13 @@ service cloud.firestore {
       // starting another anonymous Firebase session.
       allow create: if validReservation(request.resource.data)
         && reservationCooldownWritten(orderId, request.resource.data.phone);
-      allow update: if isAdmin()
-        && validAdminReservation(request.resource.data)
-        && validTransition()
-        && validStockTransition()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'statusHistory', 'updatedAt', 'stockApplied', 'stockRestored', 'confirmedAt', 'cancelledAt', 'salesChannel', 'paymentMethod', 'saleTotalCents', 'installmentCount', 'installmentValueCents', 'finalInstallmentValueCents', 'closedAt'])
-        && request.resource.data.updatedAt is timestamp;
+      allow update: if (isAdmin()
+          && validAdminReservation(request.resource.data)
+          && validTransition()
+          && validStockTransition()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'statusHistory', 'updatedAt', 'stockApplied', 'stockRestored', 'confirmedAt', 'cancelledAt', 'salesChannel', 'paymentMethod', 'saleTotalCents', 'installmentCount', 'installmentValueCents', 'finalInstallmentValueCents', 'closedAt', 'couponReserved', 'couponCounted'])
+          && request.resource.data.updatedAt is timestamp)
+        || validOwnerCouponReservation(orderId);
       allow delete: if false;
     }
 
@@ -610,14 +693,8 @@ service cloud.firestore {
       allow get: if isAdmin() || resource == null || (isActiveVip() && resource.data.status == 'published');
       allow list: if isAdmin() || (isActiveVip() && resource.data.status == 'published');
       allow create: if isAdmin() && validCoupon(request.resource.data);
-      allow update: if isAdmin()
-        && validCoupon(request.resource.data)
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
-        && request.resource.data.code == resource.data.code
-        && request.resource.data.value == resource.data.value
-        && request.resource.data.createdAt == resource.data.createdAt
-        && request.resource.data.status in ['draft', 'published']
-        && request.resource.data.updatedAt is timestamp;
+      allow update: if validAdminCouponUpdate()
+        || validCouponReservationUpdate(couponId);
       allow delete: if isAdmin();
     }
 
@@ -677,9 +754,11 @@ service cloud.firestore {
     }
 
     match /settings/{settingId} {
-      allow get: if settingId == 'vip' && (isAdmin() || isActiveVip());
+      allow get: if (settingId == 'vip' && (isAdmin() || isActiveVip()))
+        || (settingId == 'finance' && isAdmin());
       allow list: if false;
-      allow create, update: if isAdmin() && settingId == 'vip' && validVipSetting(request.resource.data);
+      allow create, update: if isAdmin() && ((settingId == 'vip' && validVipSetting(request.resource.data))
+        || (settingId == 'finance' && validFinanceBaseline(request.resource.data)));
       allow delete: if false;
     }
 
