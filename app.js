@@ -238,7 +238,8 @@ async function postPublicForm(path,payload) {
   let user=auth.currentUser;
   if(!user)user=(await signInAnonymously(auth)).user;
   const token=await user.getIdToken();
-  const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},body:JSON.stringify(payload)});
+  const apiBase=window.location.hostname==='amadeusfelipeserraandradeoliveira.github.io'?'https://graca-454ff.web.app':'';
+  const response=await fetch(`${apiBase}${path}`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},body:JSON.stringify(payload)});
   const result=await response.json().catch(()=>({}));
   if(!response.ok)throw new Error(result.error||'Não foi possível enviar. Tente novamente.');
   return result;

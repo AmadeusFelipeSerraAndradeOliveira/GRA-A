@@ -30,7 +30,7 @@ npm run dev
 
 Abra `http://localhost:5501`. O servidor local encaminha `/api/...` ao Firebase Hosting para evitar CORS. `npm run build` verifica sintaxe e fluxos principais e sincroniza os arquivos para `public/`, que é a pasta publicada pelo Firebase Hosting.
 
-As operações de gravação dependem de Functions já publicadas e da chave `PUBLIC_FORM_RATE_LIMIT_KEY` no Secret Manager do Firebase. A autenticação Anônima e por e-mail/senha deve estar habilitada no Firebase Authentication. Domínios de desenvolvimento e hospedagem devem estar em **Authentication → Settings → Authorized domains**.
+As operações de gravação dependem de Functions já publicadas e da chave `PUBLIC_FORM_RATE_LIMIT_KEY` no Secret Manager do Firebase. A autenticação Anônima e por e-mail/senha deve estar habilitada no Firebase Authentication. Domínios de desenvolvimento e hospedagem devem estar em **Authentication → Settings → Authorized domains**. Se usar o GitHub Pages, adicione `amadeusfelipeserraandradeoliveira.github.io`; os formulários apontam para o Firebase Hosting e a origem está incluída nas listas CORS do Functions e do Worker.
 
 ## Publicação das Functions e regras
 

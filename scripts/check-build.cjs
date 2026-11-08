@@ -58,6 +58,7 @@ const checks = [
   ['limite de usos de cupom é reservado e liquidado ao fechar o pedido', /reservedUses: admin\.firestore\.FieldValue\.increment\(1\)/.test(functions) && /exports\.settleReservationCoupon/.test(functions) && /couponCounted/.test(functions)],
   ['rotação de endereço IPv6 é agrupada por rede /64', /ipv6-64:/.test(functions) && /slice\(0, 4\)/.test(functions)],
   ['criação pública de pedidos e mensagens passa pela API protegida', /match \/orders\/[\s\S]*?allow create: if false;/.test(rules) && /match \/messages\/[\s\S]*?allow create: if false;/.test(rules) && /publicReservation/.test(functions) && /publicMessage/.test(functions)],
+  ['GitHub Pages envia formulários ao endpoint Firebase autorizado por CORS', /amadeusfelipeserraandradeoliveira\.github\.io/.test(app) && /amadeusfelipeserraandradeoliveira\.github\.io/.test(functions) && /https:\/\/graca-454ff\.web\.app/.test(app)],
   ['envios públicos validam token Firebase e gravam por transação', /requestUser\(req\)/.test(functions) && /db\.runTransaction\(async transaction =>/.test(functions)],
   ['galeria admite no máximo cinco fotos re-hospedadas no Cloudinary', /multiple/.test(app) && /gallery\.length\+files\.length>5/.test(app) && /sourceUrl/.test(app) && /allowed_formats=/.test(worker)],
   ['URLs externas passam pelo Worker e a URL segura retorna do Cloudinary', /validateRemoteImageUrl/.test(worker) && /result\.secure_url/.test(worker) && /isCloudinaryUrl\(result\.secure_url\)/.test(app)],

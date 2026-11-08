@@ -19,7 +19,8 @@ const allowedOrigins = [
   "http://localhost:5501",
   "http://127.0.0.1:5501",
   "https://graca-454ff.web.app",
-  "https://graca-454ff.firebaseapp.com"
+  "https://graca-454ff.firebaseapp.com",
+  "https://amadeusfelipeserraandradeoliveira.github.io"
 ];
 const orders = db.collection("orders");
 const products = db.collection("products");
