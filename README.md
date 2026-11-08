@@ -29,7 +29,7 @@ Como o plano Spark não executa código servidor, não há bloqueio confiável p
 
 O painel envia arquivos JPEG, PNG e WebP de até 5 MB, ou busca um link de imagem HTTPS, diretamente à API de upload do Cloudinary. O produto grava `secure_url` e `public_id` devolvidos pelo serviço. Não há segredo de API no código do site.
 
-Para habilitar o envio, crie no Cloudinary Console um upload preset chamado `graca_products_unsigned_v1` com **Unsigned**, formatos `jpg`, `png`, `webp`, pasta `graca/products` e IDs definidos pelo sistema. O preset unsigned é público; restrinja os formatos e a pasta, acompanhe o uso e desative/rotacione o preset se detectar abuso. A checagem de administrador na interface não substitui autenticação no serviço de upload.
+Para habilitar o envio, crie no Cloudinary Console um upload preset chamado `graca_products_unsigned_v1` com **Unsigned**, formatos `jpg`, `png`, `webp`, pasta `graca/products` e IDs definidos pelo sistema. O `public_id` devolvido precisa começar com `graca/products/`; em ambientes de pastas dinâmicas, configure também o prefixo do Public ID — a pasta visual, sozinha, pode não alterar esse identificador. O preset unsigned é público; restrinja formatos e pasta, impeça IDs definidos pelo cliente, acompanhe o uso e desative/rotacione o preset se detectar abuso. A checagem de administrador na interface não substitui autenticação no serviço de upload.
 
 Depois de criar o preset, abra **Produtos → Configurar upload** no painel para ver as opções, selecione arquivos ou cole URLs HTTPS e importe. URLs privadas, com login ou que bloqueiam buscas automatizadas podem ser recusadas pelo Cloudinary.
 

@@ -54,6 +54,7 @@ const checks = [
   ['VIP e configurações continuam limitados a membros e administradores', /match \/vipUsers\/[\s\S]*?allow list: if isAdmin\(\)/.test(rules) && /settingId == 'vip' && \(isAdmin\(\) \|\| isActiveVip\(\)\)/.test(rules)],
   ['formulário de contato confere o elemento antes de limpar', /const formElement=event\.currentTarget/.test(app) && /if\(!formElement\?\.reset\)/.test(app)],
   ['Cloudinary usa preset unsigned e grava somente secure_url e public_id', /uploadPreset: 'graca_products_unsigned_v1'/.test(cloudinary) && /api\.cloudinary\.com\/v1_1/.test(app) && /body\.append\('upload_preset'/.test(app) && /result\.secure_url/.test(app) && /CLOUDINARY_API_SECRET/.test(app) === false],
+  ['editor de produtos único mantém a galeria Cloudinary sem instruções antigas de Worker', (app.match(/productEditor = async function/g) || []).length === 1 && !/O segredo do Cloudinary fica somente no Worker/.test(app)],
   ['galeria aceita até cinco fotos e URLs HTTPS re-hospedadas no Cloudinary', /multiple/.test(app) && /gallery\.length\+files\.length>5/.test(app) && /body\.append\('file',url\.href\)/.test(app)],
   ['alerta de reserva aparece em tempo real no painel aberto', /snapshot\.docChanges\(\)/.test(app) && /notifyAdminOfNewReservation/.test(app) && /Notification\.requestPermission/.test(app)],
   ['botão WhatsApp prepara a mensagem para o número administrativo informado', /wa\.me\/5563993051964/.test(app) && /adminReservationAlertLink/.test(app)],
