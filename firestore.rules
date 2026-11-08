@@ -153,10 +153,6 @@ service cloud.firestore {
         && data.active is bool && data.updatedAt is timestamp;
     }
 
-    function productExists(productId) {
-      return exists(/databases/$(database)/documents/products/$(productId));
-    }
-
     function validReservationItem(item) {
       let productPath = /databases/$(database)/documents/products/$(item.productId);
       let product = get(productPath).data;
