@@ -65,6 +65,12 @@ const checks = [
   ['custos do catálogo permanecem em coleção privada', /match \/productCosts\/[\s\S]*?allow get, list: if isAdmin\(\)/.test(rules)],
   ['produtos de exemplo usam imagens e permanecem como rascunho até revisão', (seed.match(/id: 'seed-/g) || []).length === 8 && /active:false/.test(app)],
   ['loja mantém título, slogan e formulário da marca', /Gente, Moda e Comunidade/.test(html) && /id="contactForm"/.test(html)],
+  ['imagem real e nítida compõe o quadro do topo e o fundo fotográfico', /class="art-photo" src="https:\/\/res\.cloudinary\.com\//.test(html) && /\.hero\.page-section\{[\s\S]*?w_1920/.test(fs.readFileSync(path.join(root,'style.css'),'utf8'))],
+  ['detalhe do produto mantém foto limitada à coluna e informações/variações selecionáveis', /detail-art \$\{htm\(p\.color\|\|'pink'\)\}\$\{photo\?' has-photo':''\}/.test(app) && /\.detail-art\.has-photo\{position:relative/.test(fs.readFileSync(path.join(root,'style.css'),'utf8')) && /#detailAdd\{width:100%/.test(fs.readFileSync(path.join(root,'style.css'),'utf8'))],
+  ['comentários publicados são compartilhados pelo Firestore e atualizam ao vivo', /collection\(db,'comments'\)[\s\S]*?where\('status','==','published'\)[\s\S]*?onSnapshot/.test(app) && /setDoc\(doc\(collection\(db,'comments'\)\)/.test(app)],
+  ['painel possui aba para revisar e excluir comentários', /\['comments','COMENTÁRIOS'\]/.test(app) && /adminTab==='comments'\)return renderAdminComments/.test(app) && /data-delete-comment/.test(app)],
+  ['regras aceitam comentários somente de conta confirmada e limitam exclusão ao admin', /match \/comments\/[\s\S]*?email_verified == true[\s\S]*?allow delete: if isAdmin\(\);/.test(rules) && /allow update: if false;/.test(rules)],
+  ['teste local pode usar emuladores sem alterar o destino publicado', /\['localhost', '127\.0\.0\.1'\]\.includes\(location\.hostname\)/.test(fs.readFileSync(path.join(root,'firebase.js'),'utf8')) && /get\('emulator'\) === '1'/.test(fs.readFileSync(path.join(root,'firebase.js'),'utf8'))],
   ['regras usam negação padrão', /match \/\{document=\*\*\}[\s\S]*allow read, write: if false;/.test(rules)]
 ];
 

@@ -289,3 +289,82 @@
 #externalImageUrlFields .admin-actions{display:flex;gap:8px;align-items:center}
 #externalImageUrlFields input{min-width:0;flex:1}
 
+/* Direção de arte, seleção de peça e comentários compartilhados. */
+.hero.page-section{
+  background-image:linear-gradient(90deg,rgba(240,241,230,.98) 0%,rgba(240,241,230,.9) 36%,rgba(240,241,230,.42) 70%,rgba(240,241,230,.24) 100%),url("https://res.cloudinary.com/imc3dn7g/image/upload/f_auto,q_auto,w_1920/v1794144019/graca/brand/hero-editorial-heart-look.jpg")!important;
+  background-position:center,right 38%;background-size:cover
+}
+.hero-copy{max-width:660px}
+.hero-art{align-self:center;padding:16px 22px 22px}
+.art-frame{width:min(440px,94%);height:clamp(390px,42vw,520px);background:#ddd;box-shadow:14px 14px 0 var(--pink);border-radius:4px}
+.art-photo{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center 35%;transform:scale(1.025)}
+.art-frame:after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(16,16,14,.48),transparent 33%,transparent 57%,rgba(16,16,14,.25));pointer-events:none}
+.art-glow{inset:0;background:linear-gradient(130deg,rgba(255,77,184,.22),transparent 48%,rgba(18,211,74,.22));filter:none;z-index:1}
+.art-caption,.art-number,.art-stamp{color:#fff;text-shadow:0 2px 12px rgba(0,0,0,.55)}
+.art-caption,.art-number,.art-stamp{z-index:2}
+.art-shape{display:none}
+.art-stamp{border:1px solid rgba(255,255,255,.82);padding:9px 12px;border-radius:50%;font-size:24px}
+.hero h1{ text-wrap:balance }
+.pill-button,.mini-button,.bag-button{transition:transform .2s ease,box-shadow .2s ease,background-color .2s ease}
+.product-card{transition:transform .22s ease}
+.product-card:hover{transform:translateY(-5px)}
+.product-visual{border-radius:4px;background:linear-gradient(145deg,#f7f5ed,#e2e5d7)}
+.product-photo{transition:transform .5s cubic-bezier(.2,.7,.2,1)}
+.product-card:hover .product-photo{transform:scale(1.045)}
+.testimonials{background:#f5f4ec}
+.testimonials>.section-kicker{margin-bottom:18px}
+.testimonials>.quote-grid{margin:42px 0 0}
+.customer-comments{padding:26px clamp(18px,4vw,48px);border:1px solid var(--ink);background:#e8ebde;box-shadow:8px 8px 0 var(--green)}
+.customer-comments>.section-kicker{font-weight:500}
+.customer-comments .quote-grid{margin:0;gap:14px}
+.customer-comments .quote-grid blockquote{background:#fffdf7;border:1px solid rgba(17,18,14,.18);padding:24px;border-radius:3px;box-shadow:0 7px 20px rgba(17,18,14,.05)}
+.comment-form{background:rgba(255,255,255,.55);padding:22px;border:1px solid rgba(17,18,14,.18)}
+.comment-form textarea{border-radius:3px}
+.modal:has(.product-detail){width:min(980px,calc(100vw - 40px));max-height:min(92vh,920px);padding:34px;overflow:auto}
+.product-detail{display:grid;grid-template-columns:minmax(0,.95fr) minmax(0,1.05fr);align-items:start;gap:clamp(22px,4vw,48px)}
+.product-detail>div:first-child{min-width:0}
+.product-detail>div:last-child{min-width:0;padding:10px 8px 6px}
+.product-detail h2{margin:14px 0;font-size:clamp(32px,4vw,54px);line-height:.95;letter-spacing:-.065em}
+.product-detail>div:last-child>strong{display:block;font:500 20px var(--mono);margin:18px 0}
+.product-detail>div:last-child>p:not(.fine-print){line-height:1.65;max-width:48ch}
+.detail-art,.detail-art.has-photo{position:relative;isolation:isolate;width:100%;height:auto;min-height:0;aspect-ratio:4/5;max-height:64vh;overflow:hidden;border:1px solid rgba(17,18,14,.18);border-radius:4px;padding:0;display:grid;place-items:center;background:#eceade}
+.detail-art.has-photo:before,.detail-art.has-photo:after{display:none}
+.detail-photo{position:absolute;inset:0;width:100%;height:100%;min-height:0;object-fit:contain;background:#f4f1e8}
+.product-gallery-thumbs{padding:2px 0 5px}
+.product-gallery-thumbs button{border-radius:3px;overflow:hidden;transition:border-color .18s,transform .18s}
+.product-gallery-thumbs button:hover{transform:translateY(-2px)}
+.size-options{display:flex;flex-wrap:wrap;gap:9px;margin:12px 0 22px}
+.size-options button{min-width:48px;min-height:44px;padding:9px 13px;border:1px solid var(--ink);background:transparent;border-radius:3px;cursor:pointer}
+.size-options button.selected,.size-options button:hover{background:var(--ink);color:#fff}
+#detailAdd{width:100%;justify-content:center;min-height:54px}
+.admin-comments{display:grid;gap:12px;margin-top:22px}
+.admin-comment-card{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:start;padding:18px;background:#fffdf7;border:1px solid var(--line);box-shadow:3px 3px 0 rgba(17,18,14,.08)}
+.admin-comment-card p{margin:10px 0;line-height:1.55;overflow-wrap:anywhere}
+.admin-comment-card cite{font:9px var(--mono);font-style:normal;opacity:.65}
+.admin-comment-card .mini-button{white-space:nowrap}
+.comment-source-label{display:inline-block;font:8px var(--mono);letter-spacing:.08em;padding:5px 7px;background:var(--yellow)}
+@media(max-width:850px){
+  .hero.page-section{background-image:linear-gradient(180deg,rgba(240,241,230,.97) 0%,rgba(240,241,230,.83) 43%,rgba(240,241,230,.34) 100%),url("https://res.cloudinary.com/imc3dn7g/image/upload/f_auto,q_auto,w_1400/v1794144019/graca/brand/hero-editorial-heart-look.jpg")!important;background-position:center,right center}
+  .art-frame{height:clamp(310px,60vw,430px)}
+  .modal:has(.product-detail){width:min(720px,calc(100vw - 30px));padding:26px}
+}
+@media(max-width:600px){
+  .hero.page-section{min-height:800px;padding-bottom:75px;background-position:58% center}
+  .hero-art{width:100%;padding:12px 20px 18px;justify-content:flex-end}
+  .art-frame{width:min(72vw,340px);height:clamp(260px,74vw,350px);margin-right:5vw}
+  .art-caption{font-size:38px}.art-caption small{font-size:7px}
+  .hero-bottom{bottom:16px}
+  .customer-comments{padding:20px 15px;box-shadow:5px 5px 0 var(--green)}
+  .comment-form{padding:15px;margin-top:32px}
+  .modal:has(.product-detail){width:calc(100vw - 20px);max-height:94vh;padding:24px 18px 20px}
+  .product-detail{grid-template-columns:minmax(0,1fr);gap:18px}
+  .product-detail>div:first-child{display:grid;grid-template-columns:minmax(0,1fr);gap:8px}
+  .detail-art,.detail-art.has-photo{aspect-ratio:1.18;max-height:36vh}
+  .product-gallery-thumbs{margin:0}
+  .product-detail>div:last-child{padding:4px 2px 2px}
+  .product-detail h2{font-size:clamp(30px,9vw,42px);margin:10px 0}
+  .product-detail>div:last-child>p:not(.fine-print){margin:10px 0}
+  .product-detail .fine-print{margin:8px 0}
+  .admin-comment-card{grid-template-columns:1fr;gap:10px}
+}
+

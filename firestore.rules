@@ -411,6 +411,16 @@ service cloud.firestore {
         && messageCooldownWritten(messageId, data.email);
     }
 
+    function validCommunityComment(data) {
+      return data.keys().hasAll(['uid', 'name', 'text', 'status', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'name', 'text', 'status', 'createdAt'])
+        && data.uid == request.auth.uid && data.uid is string && data.uid.size() <= 128
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 120
+        && data.text is string && data.text.size() >= 8 && data.text.size() <= 500
+        && data.status == 'published'
+        && data.createdAt is timestamp && data.createdAt == request.time;
+    }
+
     function validReservationLimit(data, phone) {
       return data.keys().hasAll(['phone', 'lastOrderId', 'lastSubmittedAt'])
         && data.keys().hasOnly(['phone', 'lastOrderId', 'lastSubmittedAt'])
@@ -621,6 +631,16 @@ service cloud.firestore {
         && request.resource.data.createdAt == resource.data.createdAt
         && request.resource.data.status in ['Nova', 'Em atendimento', 'Concluída']
         && request.resource.data.updatedAt is timestamp;
+      allow delete: if isAdmin();
+    }
+
+    match /comments/{commentId} {
+      allow get, list: if isAdmin() || resource.data.status == 'published';
+      allow create: if signedIn()
+        && request.auth.token.email_verified == true
+        && request.auth.token.firebase.sign_in_provider != 'anonymous'
+        && validCommunityComment(request.resource.data);
+      allow update: if false;
       allow delete: if isAdmin();
     }
 

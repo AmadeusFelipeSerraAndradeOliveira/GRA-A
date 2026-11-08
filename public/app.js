@@ -72,7 +72,7 @@ async function openAdmin(){
  }
  isAdmin=false;adminLogin();
 }
-function renderAdmin(){if(!isAdmin){adminLogin();return}closeCart();$('#app').innerHTML=`<section class="admin-shell"><div class="admin-top"><b>GRAÇA® / ADMIN STUDIO</b><div><span class="fine-print">ACESSO AUTORIZADO</span> <button class="mini-button" id="adminExit">VOLTAR AO SITE</button></div></div><div class="admin-layout"><aside class="admin-side">${[['overview','VISÃO GERAL'],['products','PRODUTOS'],['orders','PEDIDOS'],['customers','CLIENTES / VIP'],['messages','MENSAGENS'],['discounts','CUPONS'],['analytics','ANÁLISES']].map(([k,v])=>`<button data-tab="${k}" class="${adminTab===k?'active':''}">${v}</button>`).join('')}</aside><div class="admin-content" id="adminContent"></div></div></section>`;
+function renderAdmin(){if(!isAdmin){adminLogin();return}closeCart();$('#app').innerHTML=`<section class="admin-shell"><div class="admin-top"><b>GRAÇA® / ADMIN STUDIO</b><div><span class="fine-print">ACESSO AUTORIZADO</span> <button class="mini-button" id="adminExit">VOLTAR AO SITE</button></div></div><div class="admin-layout"><aside class="admin-side">${[['overview','VISÃO GERAL'],['products','PRODUTOS'],['orders','PEDIDOS'],['customers','CLIENTES / VIP'],['messages','MENSAGENS'],['comments','COMENTÁRIOS'],['discounts','CUPONS'],['analytics','ANÁLISES']].map(([k,v])=>`<button data-tab="${k}" class="${adminTab===k?'active':''}">${v}</button>`).join('')}</aside><div class="admin-content" id="adminContent"></div></div></section>`;
  $('#adminExit').onclick=()=>location.reload();$$('[data-tab]').forEach(b=>b.onclick=()=>{adminTab=b.dataset.tab;renderAdmin()});renderAdminContent()}
 function renderAdminContentOriginal(){}
 function table(headers,rows){return `<div style="overflow:auto"><table class="admin-table"><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`}
@@ -182,7 +182,8 @@ let analyticsFrom = firstDayOfMonth.toLocaleDateString('sv-SE');
 let analyticsTo = currentDay.toLocaleDateString('sv-SE');
 let categoriesFromFirestore = [];
 let catalogLoaded = false;
-let productUnsubscribe = null, productCostUnsubscribe = null, categoryUnsubscribe = null, orderUnsubscribe = null, customerUnsubscribe = null, messageUnsubscribe = null, vipUnsubscribe = null, benefitUnsubscribers = [];
+let productUnsubscribe = null, productCostUnsubscribe = null, categoryUnsubscribe = null, orderUnsubscribe = null, customerUnsubscribe = null, messageUnsubscribe = null, vipUnsubscribe = null, commentsUnsubscribe = null, benefitUnsubscribers = [];
+let firestoreComments = [];
 let productCosts = new Map();
 let migratingLegacyProductCosts = false;
 let adminProductSearch = '';
@@ -308,6 +309,7 @@ function updateCatalogSubscriptions() {
   productUnsubscribe?.();
   productCostUnsubscribe?.();
   categoryUnsubscribe?.();
+  commentsUnsubscribe?.();
   productCosts = new Map();
   const productQuery = isAdmin
     ? collection(db, 'products')
@@ -341,6 +343,11 @@ function updateCatalogSubscriptions() {
     categoriesFromFirestore = snapshot.docs.map(item => item.data()).filter(item => item.active !== false).map(item => item.name).filter(Boolean);
     renderProducts();
   }, error => console.warn('Categorias não foram carregadas:', error));
+  commentsUnsubscribe = onSnapshot(query(collection(db,'comments'),where('status','==','published'),orderBy('createdAt','desc'),limit(100)), snapshot => {
+    firestoreComments = snapshot.docs.map(item=>({...item.data(),id:item.id}));
+    renderComments();
+    if(isAdmin&&adminTab==='comments'&&$('#adminContent'))renderAdminContent();
+  }, error => console.warn('Comentários compartilhados ainda não estão disponíveis:',error));
 }
 
 async function migrateLegacyProductCosts(snapshot) {
@@ -483,7 +490,7 @@ openProduct = function(id) {
   if (!p) return toast('Este produto não está disponível.');
   selectedSize = p.sizes?.[0] || 'Único';
   const gallery=galleryForProduct(p),photo=cloudinaryDeliveryUrl(gallery[0]?.imageUrl||p.imageUrl,1000);
-  openModal(`<div class="product-detail"><div><div class="detail-art ${htm(p.color||'pink')}" id="detailMainPhoto">${photo?`<img class="detail-photo" src="${htm(photo)}" alt="${htm(p.name)}">`:htm(p.mark||'GRAÇA')}</div>${gallery.length>1?`<div class="product-gallery-thumbs">${gallery.map((image,index)=>`<button type="button" data-gallery-index="${index}" aria-label="Ver foto ${index+1} de ${htm(p.name)}"><img src="${htm(cloudinaryDeliveryUrl(image.imageUrl,150))}" alt=""></button>`).join('')}</div>`:''}</div><div><div class="section-kicker">GRAÇA / PEÇA</div><h2 id="modalTitle">${htm(p.name)}</h2><strong>${money(productCents(p)/100)}</strong><p>${htm(p.description||'')}</p><p class="fine-print">ESTOQUE INFORMADO: ${Number(p.stock||0)} UNIDADES · DISPONIBILIDADE SERÁ CONFIRMADA PELA LOJA</p><label class="fine-print" for="sizeChoice">ESCOLHA UMA VARIAÇÃO</label><div class="size-options" id="sizeChoice">${(p.sizes?.length?p.sizes:['Único']).map(size=>`<button type="button" data-size="${htm(size)}" class="${size===selectedSize?'selected':''}">${htm(size)}</button>`).join('')}</div><button class="pill-button dark" id="detailAdd" ${Number(p.stock||0)<1?'disabled':''}>ADICIONAR AO CARRINHO ↗</button></div></div>`);
+  openModal(`<div class="product-detail"><div><div class="detail-art ${htm(p.color||'pink')}${photo?' has-photo':''}" id="detailMainPhoto">${photo?`<img class="detail-photo" src="${htm(photo)}" alt="${htm(p.name)}">`:htm(p.mark||'GRAÇA')}</div>${gallery.length>1?`<div class="product-gallery-thumbs">${gallery.map((image,index)=>`<button type="button" data-gallery-index="${index}" aria-label="Ver foto ${index+1} de ${htm(p.name)}"><img src="${htm(cloudinaryDeliveryUrl(image.imageUrl,150))}" alt=""></button>`).join('')}</div>`:''}</div><div><div class="section-kicker">GRAÇA / PEÇA</div><h2 id="modalTitle">${htm(p.name)}</h2><strong>${money(productCents(p)/100)}</strong><p>${htm(p.description||'')}</p><p class="fine-print">ESTOQUE INFORMADO: ${Number(p.stock||0)} UNIDADES · DISPONIBILIDADE SERÁ CONFIRMADA PELA LOJA</p><label class="fine-print" for="sizeChoice">ESCOLHA UMA VARIAÇÃO</label><div class="size-options" id="sizeChoice">${(p.sizes?.length?p.sizes:['Único']).map(size=>`<button type="button" data-size="${htm(size)}" class="${size===selectedSize?'selected':''}">${htm(size)}</button>`).join('')}</div><button class="pill-button dark" id="detailAdd" ${Number(p.stock||0)<1?'disabled':''}>ADICIONAR AO CARRINHO ↗</button></div></div>`);
   $$('[data-size]').forEach(button => button.onclick = () => { selectedSize=button.dataset.size; $$('[data-size]').forEach(item=>item.classList.toggle('selected',item===button)); });
   $$('[data-gallery-index]').forEach(button=>button.onclick=()=>{const image=gallery[Number(button.dataset.galleryIndex)];const source=cloudinaryDeliveryUrl(image?.imageUrl,1000);if(!source)return;$('#detailMainPhoto').innerHTML=`<img class="detail-photo" src="${htm(source)}" alt="${htm(p.name)}">`;$$('[data-gallery-index]').forEach(item=>item.classList.toggle('active',item===button));});
   $('#detailAdd').onclick = () => { addToCart(p.id,selectedSize); closeModal(); openCart(); };
@@ -1150,6 +1157,49 @@ function renderFinanceAnalytics(el) {
   $('#exportFinanceCsv').onclick=()=>exportFinanceCsv(sales);
 }
 
+renderComments = function() {
+  const box=$('#customerComments');if(!box)return;
+  const remote=firestoreComments.map(comment=>({name:comment.name,text:comment.text,date:comment.createdAt,source:'community'}));
+  const legacy=comments.map(comment=>({name:comment.name,text:comment.text,date:comment.created||comment.createdAt,source:'browser'}));
+  const entries=[...remote,...legacy].filter(item=>item.text).sort((a,b)=>safeDate(b.date)-safeDate(a.date)).slice(0,24);
+  box.innerHTML=entries.length?entries.map(comment=>`<blockquote>${htm(comment.text)}<cite>${htm(comment.name||'COMUNIDADE GRAÇA')} · ${safeDate(comment.date).toLocaleDateString('pt-BR')}</cite></blockquote>`).join(''):'<p class="empty-state">SEJA A PRIMEIRA PESSOA A COMPARTILHAR SUA EXPERIÊNCIA.</p>';
+};
+
+async function deleteAdminComment(commentId) {
+  if(!isAdmin||!commentId||!confirm('Excluir este comentário da comunidade?'))return;
+  try{await deleteDoc(doc(db,'comments',commentId));toast('Comentário removido da comunidade.');}
+  catch(error){console.error(error);toast(friendlyFirestoreError(error));}
+}
+
+function deleteLocalDemoComment(index) {
+  if(!isAdmin||!Number.isInteger(index)||index<0||index>=comments.length||!confirm('Remover este comentário salvo somente neste navegador?'))return;
+  comments.splice(index,1);saveAll();renderComments();renderAdminContent();toast('Comentário local removido.');
+}
+
+function renderAdminComments() {
+  const el=$('#adminContent');if(!el)return;
+  const shared=firestoreComments.map(comment=>`<article class="admin-comment-card"><div><span class="comment-source-label">COMUNIDADE · TEMPO REAL</span><p>${htm(comment.text)}</p><cite>${htm(comment.name||'Cliente')} · ${safeDate(comment.createdAt).toLocaleString('pt-BR')}</cite></div><button class="mini-button danger" data-delete-comment="${htm(comment.id)}">EXCLUIR</button></article>`).join('');
+  const local=comments.map((comment,index)=>`<article class="admin-comment-card"><div><span class="comment-source-label">ESTE NAVEGADOR</span><p>${htm(comment.text)}</p><cite>${htm(comment.name||'Cliente')} · ${safeDate(comment.created||comment.createdAt).toLocaleString('pt-BR')}</cite></div><button class="mini-button danger" data-delete-local-comment="${index}">EXCLUIR</button></article>`).join('');
+  el.innerHTML=`<div class="section-kicker">COMUNIDADE / MODERAÇÃO</div><h2>COMENTÁRIOS</h2><p>Comentários publicados no site atualizam aqui em tempo real. Você também pode remover os registros antigos que ficaram salvos apenas neste navegador.</p><section class="finance-panel"><h3>PUBLICADOS NO SITE · ${firestoreComments.length}</h3><div class="admin-comments">${shared||'<div class="empty-state">AINDA NÃO HÁ COMENTÁRIOS PUBLICADOS.</div>'}</div></section>${comments.length?`<section class="finance-panel"><h3>REGISTROS LOCAIS ANTIGOS · ${comments.length}</h3><p class="fine-print">Estes itens não estão compartilhados no Firestore; aparecem somente neste navegador.</p><div class="admin-comments">${local}</div></section>`:''}`;
+  $$('[data-delete-comment]').forEach(button=>button.onclick=()=>deleteAdminComment(button.dataset.deleteComment));
+  $$('[data-delete-local-comment]').forEach(button=>button.onclick=()=>deleteLocalDemoComment(Number(button.dataset.deleteLocalComment)));
+}
+
+$('#commentForm').onsubmit=async event=>{
+  event.preventDefault();
+  const formElement=event.currentTarget,user=auth.currentUser,text=String(new FormData(formElement).get('comment')||'').trim();
+  if(text.length<8||text.length>500)return toast('O comentário deve ter entre 8 e 500 caracteres.');
+  if(!user||user.isAnonymous||!user.emailVerified){pendingMemberAction='comment';accountModal('login','Entre em uma conta com e-mail confirmado para publicar um comentário.');return;}
+  const button=formElement.querySelector('button[type="submit"]');if(button){button.disabled=true;button.textContent='PUBLICANDO…';}
+  try{
+    const name=String(currentUser?.name||user.displayName||user.email?.split('@')[0]||'Cliente').trim().slice(0,120);
+    await setDoc(doc(collection(db,'comments')),{uid:user.uid,name,text,status:'published',createdAt:serverTimestamp()});
+    if(formElement?.reset)formElement.reset();
+    toast('Comentário publicado para a comunidade.');
+  }catch(error){console.error('Falha ao publicar comentário:',error);toast(friendlyFirestoreError(error));}
+  finally{if(button){button.disabled=false;button.textContent='PUBLICAR COMENTÁRIO ↗';}}
+};
+
 renderAdminContent = function() {
   const el=$('#adminContent');if(!el)return;
   if(adminTab!=='discounts')stopBenefitsSubscriptions();
@@ -1160,6 +1210,7 @@ renderAdminContent = function() {
   if(adminTab==='messages'){
     return renderAdminMessages();
   }
+  if(adminTab==='comments')return renderAdminComments();
   if(adminTab==='analytics')return renderFinanceAnalytics(el);
   return renderAdminOverview(el);
 };
