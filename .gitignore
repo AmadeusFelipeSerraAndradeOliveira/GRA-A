@@ -3,8 +3,10 @@ functions/node_modules/
 .firebase/
 .wrangler/
 .codex/
+.tmp-product-zip/
 .env
 .env.*
 functions/.env*
 *.log
 npm-debug.log*
+

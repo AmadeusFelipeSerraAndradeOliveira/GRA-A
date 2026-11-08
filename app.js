@@ -16,6 +16,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js";
 import app from "./firebase.js";
 import { exampleProductTemplates } from "./catalog-seed.js";
+import { CLOUDINARY_CONFIG } from "./cloudinary-config.js";
 
 /* GRAÇA GMC · vitrine, reservas e gestão operacional no Firebase. */
 const auth = getAuth(app);
@@ -184,7 +185,6 @@ let catalogLoaded = false;
 let productUnsubscribe = null, productCostUnsubscribe = null, categoryUnsubscribe = null, orderUnsubscribe = null, customerUnsubscribe = null, messageUnsubscribe = null, vipUnsubscribe = null, benefitUnsubscribers = [];
 let productCosts = new Map();
 let migratingLegacyProductCosts = false;
-let cloudinaryWorkerUrl = '';
 let adminProductSearch = '';
 let adminVipSearch = '';
 let vipUsers = [];
@@ -195,6 +195,7 @@ let adminCouponCache = [];
 let adminCampaignCache = [];
 let savingReservation = false;
 let importingExamples = false;
+let orderSnapshotPrimed = false;
 products = [];
 orders = [];
 customers = [];
@@ -234,15 +235,65 @@ const friendlyFirestoreError = error => {
   return error?.message || 'Não foi possível salvar. Tente novamente.';
 };
 
-async function postPublicForm(path,payload) {
-  let user=auth.currentUser;
-  if(!user)user=(await signInAnonymously(auth)).user;
-  const token=await user.getIdToken();
-  const apiBase=window.location.hostname==='amadeusfelipeserraandradeoliveira.github.io'?'https://graca-454ff.web.app':'';
-  const response=await fetch(`${apiBase}${path}`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},body:JSON.stringify(payload)});
-  const result=await response.json().catch(()=>({}));
-  if(!response.ok)throw new Error(result.error||'Não foi possível enviar. Tente novamente.');
-  return result;
+const submissionCooldownMs = 30_000;
+function checkBrowserCooldown(kind) {
+  const key=`graca_${kind}_last_submit`,last=Number(localStorage.getItem(key)||0),remaining=submissionCooldownMs-(Date.now()-last);
+  if(remaining>0)throw new Error(`Aguarde ${Math.ceil(remaining/1000)} segundos antes de enviar outra solicitação.`);
+}
+function markBrowserCooldown(kind) { localStorage.setItem(`graca_${kind}_last_submit`,String(Date.now())); }
+function normalizeBrazilPhone(value) { return String(value||'').replace(/\D/g,''); }
+function newConfirmationCode() {
+  const bytes=new Uint8Array(8);crypto.getRandomValues(bytes);
+  return `G${[...bytes].map(value=>value.toString(16).padStart(2,'0')).join('').toUpperCase()}`;
+}
+async function ensureSubmissionUser() {
+  return auth.currentUser||(await signInAnonymously(auth)).user;
+}
+async function createReservationRequest({orderId,uid:ownerUid,customerName,phone,items,totalCents,subtotalCents,discountCents,couponCode,couponPercent,deliveryMethod,address,pickupDetails,notes,marketingConsent}) {
+  checkBrowserCooldown('reservation');
+  const user=await ensureSubmissionUser();
+  if(user.uid!==ownerUid)throw new Error('A sessão mudou. Reabra a finalização e tente novamente.');
+  const orderRef=doc(db,'orders',orderId),existing=await getDoc(orderRef);
+  if(existing.exists()){
+    const saved=existing.data();
+    if(saved.uid!==user.uid)throw new Error('Não foi possível reutilizar este código de solicitação.');
+    return {orderId,confirmationCode:saved.confirmationCode,status:saved.status,totalCents:saved.totalCents};
+  }
+  const phoneDigits=normalizeBrazilPhone(phone);
+  if(!/^\d{10,13}$/.test(phoneDigits))throw new Error('Informe um WhatsApp com DDD, usando de 10 a 13 números.');
+  const confirmationCode=newConfirmationCode(),now=serverTimestamp();
+  const order={uid:user.uid,confirmationCode,customerName,phone:phoneDigits,items,totalCents,deliveryMethod,address,pickupDetails,notes,marketingConsent,status:'Aguardando confirmação',statusHistory:['Aguardando confirmação'],stockApplied:false,stockRestored:false,createdAt:now,updatedAt:now};
+  if(couponCode)Object.assign(order,{subtotalCents,discountCents,couponCode,couponPercent});
+  const batch=writeBatch(db);
+  batch.set(orderRef,order);
+  batch.set(doc(db,'reservationLimits',phoneDigits),{phone:phoneDigits,lastOrderId:orderId,lastSubmittedAt:now});
+  await batch.commit();
+  markBrowserCooldown('reservation');
+  return {orderId,confirmationCode,status:order.status,totalCents};
+}
+async function createContactMessage({name,email,phone,subject,message,companyWebsite}) {
+  if(companyWebsite)return {ignored:true};
+  checkBrowserCooldown('contact');
+  const user=await ensureSubmissionUser(),normalizedEmail=String(email||'').trim().toLowerCase();
+  const messageRef=doc(collection(db,'messages')),now=serverTimestamp(),batch=writeBatch(db);
+  const data={uid:user.uid,name,email:normalizedEmail,subject,message,status:'Nova',createdAt:now,updatedAt:now};
+  if(phone)data.phone=phone;
+  batch.set(messageRef,data);
+  batch.set(doc(db,'messageLimits',normalizedEmail),{email:normalizedEmail,lastMessageId:messageRef.id,lastSubmittedAt:now});
+  await batch.commit();
+  markBrowserCooldown('contact');
+  return {messageId:messageRef.id};
+}
+function adminReservationAlertLink(code) {
+  const text=`Olá! Acabei de enviar uma solicitação de reserva no site GRAÇA. Código: ${code}.`;
+  return `https://wa.me/5563993051964?text=${encodeURIComponent(text)}`;
+}
+function notifyAdminOfNewReservation(order) {
+  const label=`Nova reserva ${order.confirmationCode||order.id} · ${order.customerName||'cliente'}`;
+  toast(label);
+  if(typeof Notification!=='undefined'&&Notification.permission==='granted'){
+    try{new Notification('GRAÇA · Nova solicitação de reserva',{body:label,icon:'/assets/graca-editorial-background.jfif'});}catch{}
+  }
 }
 
 function updateCatalogSubscriptions() {
@@ -321,6 +372,7 @@ function subscribeUserData(user) {
   vipUnsubscribe?.();
   stopBenefitsSubscriptions();
   orders = [];
+  orderSnapshotPrimed = false;
   customers = [];
   messages = [];
   vipUsers = [];
@@ -329,8 +381,11 @@ function subscribeUserData(user) {
     ? query(collection(db, 'orders'), orderBy('createdAt','desc'), limit(250))
     : query(collection(db, 'orders'), where('uid', '==', user.uid), limit(100));
   orderUnsubscribe = onSnapshot(orderQuery, snapshot => {
+    const incoming=orderSnapshotPrimed&&isAdmin?snapshot.docChanges().filter(change=>change.type==='added').map(change=>({id:change.doc.id,...change.doc.data()})).filter(order=>order.status==='Aguardando confirmação'):[];
     orders = snapshot.docs.map(item => normalizeOrder(item.id,item.data())).sort((a,b) => safeDate(b.createdAt) - safeDate(a.createdAt));
+    orderSnapshotPrimed = true;
     if (isAdmin && $('#adminContent')) renderAdminContent();
+    incoming.forEach(notifyAdminOfNewReservation);
   }, error => console.error('Falha ao sincronizar reservas:', error));
   if (isAdmin) {
     customerUnsubscribe = onSnapshot(query(collection(db, 'customers'), limit(500)), snapshot => {
@@ -479,7 +534,7 @@ checkout = function() {
   const preview = basket.map(item=>{const p=products.find(product=>String(product.id)===String(item.id));return `<li>${htm(p?.name||'Produto')} · ${htm(item.size)} · ${Number(item.qty)} un. · ${p?money(productCents(p)*Number(item.qty)/100):'indisponível'}</li>`;}).join('');
   const totals=cartTotals();
   closeCart();
-  openModal(`<div class="section-kicker">RESERVA / PEDIDO</div><h2 id="modalTitle">SOLICITAR RESERVA.</h2><p>Você pode continuar como visitante. Informe seu nome e WhatsApp para a GRAÇA confirmar disponibilidade e combinar os próximos passos.</p><div class="reservation-summary"><strong>RESUMO</strong><ul>${preview}</ul><div class="total"><span>SUBTOTAL</span><strong>${money(totals.subtotalCents/100)}</strong></div>${totals.discountCents?`<div class="total"><span>DESCONTO (${htm(totals.coupon.code)})</span><strong>−${money(totals.discountCents/100)}</strong></div>`:''}<div class="total"><span>VALOR ESTIMADO</span><strong>${money(totals.totalCents/100)}</strong></div></div><form id="reservationForm" class="modal-form"><label>SEU NOME<input name="customerName" autocomplete="name" maxlength="120" required></label><label>WHATSAPP<input name="phone" type="tel" autocomplete="tel" maxlength="40" placeholder="(63) 9 0000-0000" required></label><label>COMO PREFERE RECEBER?<select name="deliveryMethod" id="deliveryMethod"><option value="Retirada">Retirada</option><option value="Entrega">Entrega</option></select></label><div id="deliveryAddress" class="address-fields" hidden><strong>ENDEREÇO DE ENTREGA</strong><label>CEP<input name="zip" autocomplete="postal-code" maxlength="12"></label><div class="modal-grid"><label>RUA<input name="street" autocomplete="address-line1" maxlength="120"></label><label>NÚMERO<input name="number" maxlength="20"></label></div><label>BAIRRO<input name="district" maxlength="80"></label><div class="modal-grid"><label>CIDADE<input name="city" maxlength="80"></label><label>ESTADO<input name="state" maxlength="2"></label></div></div><label>DETALHE PARA RETIRADA (OPCIONAL)<input name="pickupDetails" maxlength="160" placeholder="Ex.: horário preferido"></label><label>OBSERVAÇÃO (OPCIONAL)<textarea name="notes" rows="3" maxlength="500"></textarea></label><label class="consent-row"><input name="marketingConsent" type="checkbox"> Quero receber novidades e ofertas. Opcional; não é necessário para processar a reserva.</label><p class="fine-print">Nome e WhatsApp serão usados para analisar esta solicitação e falar sobre a reserva. A loja ainda precisa confirmar a disponibilidade. Nenhum pagamento será solicitado nesta etapa.</p><button class="pill-button dark" id="submitReservation">ENVIAR SOLICITAÇÃO ↗</button></form>`);
+  openModal(`<div class="section-kicker">RESERVA / PEDIDO</div><h2 id="modalTitle">SOLICITAR RESERVA.</h2><p>Você pode continuar como visitante. Informe seu nome e WhatsApp para a GRAÇA confirmar disponibilidade e combinar os próximos passos.</p><div class="reservation-summary"><strong>RESUMO</strong><ul>${preview}</ul><div class="total"><span>SUBTOTAL</span><strong>${money(totals.subtotalCents/100)}</strong></div>${totals.discountCents?`<div class="total"><span>DESCONTO (${htm(totals.coupon.code)})</span><strong>−${money(totals.discountCents/100)}</strong></div>`:''}<div class="total"><span>VALOR ESTIMADO</span><strong>${money(totals.totalCents/100)}</strong></div></div><form id="reservationForm" class="modal-form"><label class="contact-honeypot" aria-hidden="true">Site<input name="website" tabindex="-1" autocomplete="off"></label><label>SEU NOME<input name="customerName" autocomplete="name" maxlength="120" required></label><label>WHATSAPP<input name="phone" type="tel" autocomplete="tel" maxlength="40" placeholder="(63) 9 0000-0000" required></label><label>COMO PREFERE RECEBER?<select name="deliveryMethod" id="deliveryMethod"><option value="Retirada">Retirada</option><option value="Entrega">Entrega</option></select></label><div id="deliveryAddress" class="address-fields" hidden><strong>ENDEREÇO DE ENTREGA</strong><label>CEP<input name="zip" autocomplete="postal-code" maxlength="12"></label><div class="modal-grid"><label>RUA<input name="street" autocomplete="address-line1" maxlength="120"></label><label>NÚMERO<input name="number" maxlength="20"></label></div><label>BAIRRO<input name="district" maxlength="80"></label><div class="modal-grid"><label>CIDADE<input name="city" maxlength="80"></label><label>ESTADO<input name="state" maxlength="2"></label></div></div><label>DETALHE PARA RETIRADA (OPCIONAL)<input name="pickupDetails" maxlength="160" placeholder="Ex.: horário preferido"></label><label>OBSERVAÇÃO (OPCIONAL)<textarea name="notes" rows="3" maxlength="500"></textarea></label><label class="consent-row"><input name="marketingConsent" type="checkbox"> Quero receber novidades e ofertas. Opcional; não é necessário para processar a reserva.</label><p class="fine-print">Nome e WhatsApp serão usados para analisar esta solicitação e falar sobre a reserva. A loja ainda precisa confirmar a disponibilidade. Nenhum pagamento será solicitado nesta etapa.</p><button class="pill-button dark" id="submitReservation">ENVIAR SOLICITAÇÃO ↗</button></form>`);
   const method=$('#deliveryMethod'), address=$('#deliveryAddress');
   const toggleAddress=()=>{const delivery=method.value==='Entrega';address.hidden=!delivery;for(const name of ['zip','street','number','district','city','state'])address.querySelector(`[name="${name}"]`).required=delivery;};
   method.onchange=toggleAddress; toggleAddress();
@@ -489,6 +544,8 @@ checkout = function() {
     if (basket.length>6) return toast('Divida a solicitação em até seis combinações de produto e variação.');
     const formElement=event.currentTarget,form=new FormData(formElement), name=String(form.get('customerName')).trim(), phone=String(form.get('phone')).trim();
     if (!name || !phone) return toast('Preencha seu nome e WhatsApp.');
+    if(!/^\d{10,13}$/.test(normalizeBrazilPhone(phone)))return toast('Informe seu WhatsApp com DDD, usando de 10 a 13 números.');
+    if(String(form.get('website')||'').trim())return;
     let items;
     try {
       items=basket.map(item=>{
@@ -509,13 +566,14 @@ checkout = function() {
       const savedDraft=get('pendingReservation',null);
       let orderId=savedDraft?.fingerprint===cartFingerprint&&savedDraft?.uid===user.uid?savedDraft.orderId:'';
       if(!orderId){orderId=doc(collection(db,'orders')).id;set('pendingReservation',{fingerprint:cartFingerprint,uid:user.uid,orderId});}
-      const savedOrder=await postPublicForm('/api/public/reservation',{clientOrderId:orderId,customerName:name,phone,items:items.map(item=>({productId:item.productId,size:item.size,quantity:item.quantity})),couponCode:appliedCartCoupon?.code===cartCoupon?cartCoupon:'',deliveryMethod,address:addressData,pickupDetails:String(form.get('pickupDetails')||'').trim().slice(0,160),notes:String(form.get('notes')||'').trim().slice(0,500),marketingConsent:form.get('marketingConsent')==='on'});
+      const coupon=appliedCartCoupon?.code===cartCoupon?appliedCartCoupon:null;
+      const savedOrder=await createReservationRequest({orderId,uid:user.uid,customerName:name,phone,items,totalCents:totals.totalCents,subtotalCents:totals.subtotalCents,discountCents:totals.discountCents,couponCode:coupon?.code||'',couponPercent:coupon?.value||0,deliveryMethod,address:addressData,pickupDetails:String(form.get('pickupDetails')||'').trim().slice(0,160),notes:String(form.get('notes')||'').trim().slice(0,500),marketingConsent:form.get('marketingConsent')==='on'});
       if(!savedOrder?.orderId||!savedOrder?.confirmationCode)throw new Error('A solicitação não retornou uma confirmação válida. Tente novamente.');
       cart=[];cartCoupon='';set('cart',cart);set('cartCoupon','');renderCart();
       appliedCartCoupon=null;
       localStorage.removeItem('graca_pendingReservation');
       closeModal();
-      openModal(`<div class="section-kicker">SOLICITAÇÃO REGISTRADA</div><h2 id="modalTitle">RECEBEMOS SEU PEDIDO.</h2><div class="confirmation-code">${htm(savedOrder.confirmationCode)}</div><p>O status é <strong>${htm(savedOrder.status||'Aguardando confirmação')}</strong>. A equipe da GRAÇA vai verificar o estoque e conversar com você pelo WhatsApp.</p><p>${items.map(item=>`${htm(item.name)} · ${htm(item.size)} · ${item.quantity} un.`).join('<br>')}</p><p>Valor estimado: <strong>${money(Number(savedOrder.totalCents||totals.totalCents)/100)}</strong><br>Modalidade: <strong>${htm(deliveryMethod)}</strong></p><p class="fine-print">Esta solicitação não é uma compra concluída nem uma reserva confirmada automaticamente. Nenhum pagamento foi cobrado.</p><button class="pill-button dark" id="reservationDone">VOLTAR À LOJA</button>`);
+      openModal(`<div class="section-kicker">SOLICITAÇÃO REGISTRADA</div><h2 id="modalTitle">RECEBEMOS SEU PEDIDO.</h2><div class="confirmation-code">${htm(savedOrder.confirmationCode)}</div><p>O status é <strong>${htm(savedOrder.status||'Aguardando confirmação')}</strong>. A equipe da GRAÇA vai verificar o estoque e conversar com você pelo WhatsApp.</p><p>${items.map(item=>`${htm(item.name)} · ${htm(item.size)} · ${item.quantity} un.`).join('<br>')}</p><p>Valor estimado: <strong>${money(Number(savedOrder.totalCents||totals.totalCents)/100)}</strong><br>Modalidade: <strong>${htm(deliveryMethod)}</strong></p><p class="fine-print">Esta solicitação não é uma compra concluída nem uma reserva confirmada automaticamente. Nenhum pagamento será solicitado nesta etapa.</p><a class="pill-button dark" href="${htm(adminReservationAlertLink(savedOrder.confirmationCode))}" target="_blank" rel="noopener">AVISAR A EQUIPE PELO WHATSAPP ↗</a><p class="fine-print">O WhatsApp abrirá uma mensagem pronta. Toque em enviar para avisar a equipe.</p><button class="mini-button" id="reservationDone">VOLTAR À LOJA</button>`);
       $('#reservationDone').onclick=closeModal;
     } catch(error) {
       console.error('Falha ao enviar solicitação de reserva:',error);
@@ -694,22 +752,21 @@ async function deleteProduct(id) {
 
 async function uploadProductPhoto(source) {
   if(!isAdmin||!auth.currentUser?.emailVerified)throw new Error('Entre em uma conta de administrador com e-mail confirmado.');
-  if(!cloudinaryWorkerUrl){const setting=await getDoc(doc(db,'settings','cloudinary'));cloudinaryWorkerUrl=setting.exists()?setting.data().workerUrl||'':'';}
-  if(!cloudinaryWorkerUrl)throw new Error('Configure primeiro o endereço do Worker de upload.');
+  if(!CLOUDINARY_CONFIG.uploadPreset)throw new Error('Configure o preset unsigned graca_products_unsigned_v1 no Cloudinary.');
   const body=new FormData();
   if(source instanceof File){
     if(!['image/jpeg','image/png','image/webp'].includes(source.type)||source.size<1||source.size>5*1024*1024)throw new Error('Use uma foto JPEG, PNG ou WebP de até 5 MB.');
-    body.append('file',source);
+    body.append('file',source,source.name);
   }else if(typeof source==='string'){
     let url;try{url=new URL(source.trim());}catch{throw new Error('Cole um endereço direto de imagem HTTPS válido.');}
     if(url.protocol!=='https:'||url.username||url.password||(url.port&&url.port!=='443')||!url.hostname.includes('.')||/(localhost|\.local|\.internal)$/i.test(url.hostname)||/^\d{1,3}(?:\.\d{1,3}){3}$/.test(url.hostname))throw new Error('Use um link HTTPS público, sem senha, porta especial ou endereço local.');
-    body.append('sourceUrl',url.href);
+    body.append('file',url.href);
   }else throw new Error('Escolha um arquivo ou informe um endereço HTTPS de imagem.');
-  const token=await auth.currentUser.getIdToken();
-  const response=await fetch(cloudinaryWorkerUrl,{method:'POST',headers:{Authorization:`Bearer ${token}`},body});
+  body.append('upload_preset',CLOUDINARY_CONFIG.uploadPreset);
+  const response=await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(CLOUDINARY_CONFIG.cloudName)}/image/upload`,{method:'POST',body});
   let result={};try{result=await response.json();}catch{}
-  if(!response.ok)throw new Error(result.error||'O Worker recusou o envio.');
-  if(!isCloudinaryUrl(result.secure_url)||!isCloudinaryPublicId(result.public_id))throw new Error('O Cloudinary não retornou uma URL segura e um identificador válidos.');
+  if(!response.ok)throw new Error(result.error?.message||'O Cloudinary recusou o envio. Confira o preset unsigned e a pasta definida para graca/products.');
+  if(!isCloudinaryUrl(result.secure_url)||!isCloudinaryPublicId(result.public_id))throw new Error('A resposta do Cloudinary não corresponde à pasta de produtos. Confira o preset e tente novamente.');
   return {imageUrl:result.secure_url,imagePublicId:result.public_id};
 }
 
@@ -810,14 +867,7 @@ async function saveCategory(name) {
 }
 
 async function configureCloudinaryWorker() {
-  const saved=await getDoc(doc(db,'settings','cloudinary'));
-  const current=saved.exists()?saved.data().workerUrl||'':cloudinaryWorkerUrl;
-  const value=prompt('Cole o endereço HTTPS do Worker de upload que você publicou na sua conta Cloudflare (ex.: https://graca-cloudinary-upload.seu-subdominio.workers.dev/upload). Nenhuma chave Cloudinary deve ser colada aqui.',current);
-  if(value===null)return;
-  const url=value.trim();
-  if(url&&!/^https:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.workers\.dev(?:\/upload)?$/i.test(url))return toast('Use o endereço HTTPS do Worker em workers.dev.');
-  try{await setDoc(doc(db,'settings','cloudinary'),{workerUrl:url,updatedAt:serverTimestamp()},{merge:true});cloudinaryWorkerUrl=url;toast(url?'Worker de upload configurado.':'Endereço do Worker removido.');}
-  catch(error){console.error(error);toast(friendlyFirestoreError(error));}
+  openModal(`<div class="section-kicker">IMAGENS / CLOUDINARY</div><h2 id="modalTitle">CONFIGURAR O ENVIO DE FOTOS.</h2><ol><li>Abra Cloudinary Console → Settings → Upload presets.</li><li>Crie o preset <strong>${htm(CLOUDINARY_CONFIG.uploadPreset)}</strong> em modo <strong>Unsigned</strong>.</li><li>Limite os formatos a JPG, PNG e WebP, escolha a pasta <strong>graca/products</strong> e bloqueie IDs de arquivo definidos pelo navegador.</li><li>Salve o preset. Depois, reabra o painel e envie uma foto ou URL HTTPS.</li></ol><p class="fine-print">O preset é público e permite uploads à conta Cloudinary. Restrinja os formatos e a pasta, acompanhe o uso e gire o nome do preset se observar abuso. Nenhum segredo da conta é colocado no site.</p>`);
 }
 
 productEditor = async function(id='') {
@@ -826,14 +876,12 @@ productEditor = async function(id='') {
   const savedCost=id?await getDoc(doc(db,'productCosts',String(id))).catch(()=>null):null;
   const privateCost=savedCost?.exists()?savedCost.data().cost:productCosts.get(String(id))?.cost;
   let imageUrl=isCloudinaryUrl(p.imageUrl)?p.imageUrl:'', imagePublicId=isCloudinaryPublicId(p.imagePublicId)?p.imagePublicId:'', previewUrl='';
-  const setting=await getDoc(doc(db,'settings','cloudinary')).catch(()=>null);
-  cloudinaryWorkerUrl=setting?.exists()?setting.data().workerUrl||'':'';
   openModal(`<div class="section-kicker">CATÁLOGO / ${id?'EDITAR':'NOVO'}</div><h2 id="modalTitle">${id?'EDITAR PRODUTO':'CADASTRAR PRODUTO'}.</h2>${p.seededExample?'<p class="seed-review-note">Este é um exemplo: confirme nome, preço, estoque e variações antes de publicar.</p>':''}<form id="productForm" class="modal-form"><label>NOME<input name="name" maxlength="160" required value="${htm(p.name)}"></label><label>CATEGORIA<input name="category" maxlength="80" required value="${htm(p.category)}"></label><div class="modal-grid"><label>PREÇO<input name="price" type="number" min="0.01" max="100000" step=".01" required value="${htm(p.price)}"></label><label>CUSTO (OPCIONAL)<input name="cost" type="number" min="0" step=".01" value="${htm(privateCost??'')}"></label></div><div class="modal-grid"><label>DESCONTO (%)<input name="discount" type="number" min="0" max="99" value="${htm(p.discount||0)}"></label><label>ESTOQUE<input name="stock" type="number" min="0" max="100000" step="1" required value="${htm(p.stock||0)}"></label></div><label>TAMANHOS / VARIAÇÕES (SEPARADOS POR VÍRGULA)<input name="sizes" required value="${htm((p.sizes||[]).join(', '))}"></label><label>DESCRIÇÃO<textarea name="description" maxlength="1200">${htm(p.description||'')}</textarea></label><label><input name="featured" type="checkbox" ${p.featured?'checked':''}> Exibir na curadoria em destaque</label><label><input name="active" type="checkbox" ${p.active!==false?'checked':''}> Publicado no catálogo</label><div class="upload-preview">${imageUrl?`<img id="productPhotoPreview" src="${htm(imageUrl)}" alt="Prévia da foto">`:'<div id="productPhotoPreview" class="empty-state">SEM FOTO</div>'}</div><label>ESCOLHER FOTO NO CELULAR OU COMPUTADOR<input id="photoFile" type="file" accept="image/jpeg,image/png,image/webp"></label><div class="admin-toolbar"><button id="uploadPhoto" class="mini-button" type="button">ENVIAR FOTO</button><button id="removePhoto" class="mini-button" type="button">REMOVER FOTO</button></div><p class="fine-print">Envio limitado a JPEG, PNG ou WebP até 5 MB. O segredo do Cloudinary fica somente no Worker.</p><button class="pill-button dark" id="saveProduct">SALVAR PRODUTO</button></form>`);
   const fileInput=$('#photoFile'), uploadButton=$('#uploadPhoto'), saveButton=$('#saveProduct');
   fileInput.onchange=()=>{const file=fileInput.files?.[0];if(!file)return;if(!['image/jpeg','image/png','image/webp'].includes(file.type)||file.size>5*1024*1024){fileInput.value='';return toast('Escolha JPEG, PNG ou WebP de até 5 MB.');}if(previewUrl)URL.revokeObjectURL(previewUrl);previewUrl=URL.createObjectURL(file);$('#productPhotoPreview').outerHTML=`<img id="productPhotoPreview" src="${previewUrl}" alt="Prévia da foto selecionada">`;};
   $('#removePhoto').onclick=()=>{imageUrl='';imagePublicId='';if(previewUrl)URL.revokeObjectURL(previewUrl);$('#productPhotoPreview').outerHTML='<div id="productPhotoPreview" class="empty-state">SEM FOTO</div>';fileInput.value='';};
   uploadButton.onclick=async()=>{
-    const file=fileInput.files?.[0];if(!file)return toast('Escolha uma foto primeiro.');if(!cloudinaryWorkerUrl)return toast('Configure o endereço do Worker no painel antes de enviar fotos.');
+    const file=fileInput.files?.[0];if(!file)return toast('Escolha uma foto primeiro.');
     uploadButton.disabled=true;uploadButton.textContent='ENVIANDO…';
     try{const uploaded=await uploadProductPhoto(file);imageUrl=uploaded.imageUrl;imagePublicId=uploaded.imagePublicId;$('#productPhotoPreview').outerHTML=`<img id="productPhotoPreview" src="${htm(imageUrl)}" alt="Prévia da foto enviada">`;toast('Foto enviada. Salve o produto para gravar a URL segura.');}
     catch(error){console.error(error);toast(error.message||'Falha no upload da foto.');}
@@ -866,9 +914,7 @@ productEditor = async function(id='') {
   const privateCost=savedCost?.exists()?savedCost.data().cost:productCosts.get(String(id))?.cost;
   let gallery=galleryForProduct(p).map(image=>({imageUrl:image.imageUrl,imagePublicId:image.imagePublicId}));
   let externalUrls=[''];
-  const setting=await getDoc(doc(db,'settings','cloudinary')).catch(()=>null);
-  cloudinaryWorkerUrl=setting?.exists()?setting.data().workerUrl||'':'';
-  openModal(`<div class="section-kicker">CATÁLOGO / ${id?'EDITAR':'NOVO'}</div><h2 id="modalTitle">${id?'EDITAR PRODUTO':'CADASTRAR PRODUTO'}.</h2>${p.seededExample?'<p class="seed-review-note">Este é um exemplo: confirme nome, preço, estoque e variações antes de publicar.</p>':''}<form id="productForm" class="modal-form"><label>NOME<input name="name" maxlength="160" required value="${htm(p.name)}"></label><label>CATEGORIA<input name="category" maxlength="80" required value="${htm(p.category)}"></label><div class="modal-grid"><label>PREÇO<input name="price" type="number" min="0.01" max="100000" step=".01" required value="${htm(p.price)}"></label><label>CUSTO (OPCIONAL)<input name="cost" type="number" min="0" step=".01" value="${htm(privateCost??'')}"></label></div><div class="modal-grid"><label>DESCONTO (%)<input name="discount" type="number" min="0" max="99" value="${htm(p.discount||0)}"></label><label>ESTOQUE<input name="stock" type="number" min="0" max="100000" step="1" required value="${htm(p.stock||0)}"></label></div><label>TAMANHOS / VARIAÇÕES (SEPARADOS POR VÍRGULA)<input name="sizes" required value="${htm((p.sizes||[]).join(', '))}"></label><label>DESCRIÇÃO<textarea name="description" maxlength="1200">${htm(p.description||'')}</textarea></label><label><input name="featured" type="checkbox" ${p.featured?'checked':''}> Exibir na curadoria em destaque</label><label><input name="active" type="checkbox" ${p.active!==false?'checked':''}> Publicado no catálogo</label><section class="product-gallery-editor"><h3>FOTOS DO PRODUTO · ${gallery.length}/5</h3><div id="productGalleryPreview" class="product-gallery-thumbnails"></div><label>ENVIAR ATÉ 5 ARQUIVOS (JPEG, PNG OU WEBP)<input id="photoFiles" type="file" accept="image/jpeg,image/png,image/webp" multiple></label><button id="uploadProductFiles" class="mini-button" type="button">ENVIAR FOTOS SELECIONADAS</button><div id="externalImageUrlFields"></div><button id="addExternalImageUrl" class="mini-button" type="button">+ ADICIONAR URL DE IMAGEM</button><button id="importExternalImages" class="mini-button" type="button">IMPORTAR URLs PELO CLOUDINARY</button><p class="fine-print">Você pode manter até 5 imagens. Links externos são re-hospedados no Cloudinary; somente a URL segura devolvida pelo serviço será salva. O segredo permanece no Worker.</p></section><button class="pill-button dark" id="saveProduct">SALVAR PRODUTO</button></form>`);
+  openModal(`<div class="section-kicker">CATÁLOGO / ${id?'EDITAR':'NOVO'}</div><h2 id="modalTitle">${id?'EDITAR PRODUTO':'CADASTRAR PRODUTO'}.</h2>${p.seededExample?'<p class="seed-review-note">Este é um exemplo: confirme nome, preço, estoque e variações antes de publicar.</p>':''}<form id="productForm" class="modal-form"><label>NOME<input name="name" maxlength="160" required value="${htm(p.name)}"></label><label>CATEGORIA<input name="category" maxlength="80" required value="${htm(p.category)}"></label><div class="modal-grid"><label>PREÇO<input name="price" type="number" min="0.01" max="100000" step=".01" required value="${htm(p.price)}"></label><label>CUSTO (OPCIONAL)<input name="cost" type="number" min="0" step=".01" value="${htm(privateCost??'')}"></label></div><div class="modal-grid"><label>DESCONTO (%)<input name="discount" type="number" min="0" max="99" value="${htm(p.discount||0)}"></label><label>ESTOQUE<input name="stock" type="number" min="0" max="100000" step="1" required value="${htm(p.stock||0)}"></label></div><label>TAMANHOS / VARIAÇÕES (SEPARADOS POR VÍRGULA)<input name="sizes" required value="${htm((p.sizes||[]).join(', '))}"></label><label>DESCRIÇÃO<textarea name="description" maxlength="1200">${htm(p.description||'')}</textarea></label><label><input name="featured" type="checkbox" ${p.featured?'checked':''}> Exibir na curadoria em destaque</label><label><input name="active" type="checkbox" ${p.active!==false?'checked':''}> Publicado no catálogo</label><section class="product-gallery-editor"><h3>FOTOS DO PRODUTO · ${gallery.length}/5</h3><div id="productGalleryPreview" class="product-gallery-thumbnails"></div><label>ENVIAR ATÉ 5 ARQUIVOS (JPEG, PNG OU WEBP)<input id="photoFiles" type="file" accept="image/jpeg,image/png,image/webp" multiple></label><button id="uploadProductFiles" class="mini-button" type="button">ENVIAR FOTOS SELECIONADAS</button><div id="externalImageUrlFields"></div><button id="addExternalImageUrl" class="mini-button" type="button">+ ADICIONAR URL DE IMAGEM</button><button id="importExternalImages" class="mini-button" type="button">IMPORTAR URLs PELO CLOUDINARY</button><p class="fine-print">Você pode manter até 5 imagens. Links externos são re-hospedados no Cloudinary; somente a URL segura devolvida pelo serviço será salva. O preset de upload fica visível no navegador; restrinja formatos e pasta no Cloudinary.</p></section><button class="pill-button dark" id="saveProduct">SALVAR PRODUTO</button></form>`);
   const fileInput=$('#photoFiles'), uploadButton=$('#uploadProductFiles'), saveButton=$('#saveProduct');
   const renderGallery=()=>{
     const box=$('#productGalleryPreview');if(!box)return;
@@ -1041,8 +1087,13 @@ function renderAdminOverview(el) {
   const pending=orders.filter(order=>order.status==='Aguardando confirmação').length;
   const inProgress=orders.filter(order=>['Reserva confirmada','Em preparação','Disponível para retirada','Em rota de entrega','Entregue'].includes(order.status)).length;
   const recent=orders.slice(0,8);
-  el.innerHTML=`<div class="section-kicker">GRAÇA / PAINEL</div><h2>VISÃO GERAL</h2><p>Atalhos e indicadores da operação diária.</p><div class="admin-cards"><div class="metric"><span>PRODUTOS PUBLICADOS</span><strong>${activeProducts().length}</strong></div><div class="metric"><span>AGUARDANDO CONFIRMAÇÃO</span><strong>${pending}</strong></div><div class="metric"><span>EM ATENDIMENTO</span><strong>${inProgress}</strong></div><div class="metric"><span>CONTAS VIP</span><strong>${customers.length}</strong></div></div><div class="admin-toolbar"><div class="admin-shortcuts"><button class="mini-button primary" data-admin-shortcut="orders">ABRIR PEDIDOS</button><button class="mini-button" data-admin-shortcut="products">GERENCIAR PRODUTOS</button><button class="mini-button" data-admin-shortcut="analytics">ABRIR FINANCEIRO</button></div></div><h3>ÚLTIMAS SOLICITAÇÕES</h3>${recent.length?table(['CÓDIGO','CLIENTE','DATA','VALOR ESTIMADO','STATUS'],recent.map(order=>[htm(order.confirmationCode||order.id),htm(order.customerName),safeDate(order.createdAt).toLocaleDateString('pt-BR'),money(displayTotal(order)),htm(order.status)])):'<div class="empty-state">AS NOVAS SOLICITAÇÕES APARECERÃO AQUI EM TEMPO REAL.</div>'}<p class="fine-print">O faturamento e os dados de pagamento são exibidos somente na aba Análise Financeira e consideram vendas encerradas.</p>`;
+  el.innerHTML=`<div class="section-kicker">GRAÇA / PAINEL</div><h2>VISÃO GERAL</h2><p>Atalhos e indicadores da operação diária.</p><div class="admin-cards"><div class="metric"><span>PRODUTOS PUBLICADOS</span><strong>${activeProducts().length}</strong></div><div class="metric"><span>AGUARDANDO CONFIRMAÇÃO</span><strong>${pending}</strong></div><div class="metric"><span>EM ATENDIMENTO</span><strong>${inProgress}</strong></div><div class="metric"><span>CONTAS VIP</span><strong>${customers.length}</strong></div></div><div class="admin-toolbar"><div class="admin-shortcuts"><button class="mini-button primary" data-admin-shortcut="orders">ABRIR PEDIDOS</button><button class="mini-button" data-admin-shortcut="products">GERENCIAR PRODUTOS</button><button class="mini-button" data-admin-shortcut="analytics">ABRIR FINANCEIRO</button></div><button class="mini-button" id="enableAdminAlerts">ATIVAR AVISOS NESTE DISPOSITIVO</button></div><h3>ÚLTIMAS SOLICITAÇÕES</h3>${recent.length?table(['CÓDIGO','CLIENTE','DATA','VALOR ESTIMADO','STATUS'],recent.map(order=>[htm(order.confirmationCode||order.id),htm(order.customerName),safeDate(order.createdAt).toLocaleDateString('pt-BR'),money(displayTotal(order)),htm(order.status)])):'<div class="empty-state">AS NOVAS SOLICITAÇÕES APARECERÃO AQUI EM TEMPO REAL.</div>'}<p class="fine-print">Com a aba do painel aberta, novas solicitações atualizam esta tela e geram um aviso neste navegador. O botão de WhatsApp abre uma mensagem pronta, que ainda precisa ser enviada pela pessoa que reservou.</p>`;
   $$('[data-admin-shortcut]').forEach(button=>button.onclick=()=>{adminTab=button.dataset.adminShortcut;renderAdmin();});
+  $('#enableAdminAlerts').onclick=async()=>{
+    if(typeof Notification==='undefined')return toast('Este navegador não oferece avisos de tela. Os pedidos continuam atualizando no painel.');
+    try{const permission=await Notification.requestPermission();toast(permission==='granted'?'Avisos de novas reservas ativados neste dispositivo.':'Permissão de avisos não concedida.');}
+    catch{toast('Não foi possível ativar avisos neste navegador.');}
+  };
 }
 
 function renderFinanceBars(title,entries,totalCents) {
@@ -1138,7 +1189,11 @@ $('#contactForm').onsubmit=async event=>{
   event.preventDefault();const formElement=event.currentTarget,form=new FormData(formElement),name=String(form.get('name')).trim(),email=String(form.get('email')).trim().toLowerCase(),phone=String(form.get('phone')||'').trim(),subject=String(form.get('subject')).trim(),message=String(form.get('message')).trim(),companyWebsite=String(form.get('companyWebsite')||'');
   if(name.length<1||name.length>120||!email||message.length<8||message.length>1500)return toast('Confira seu nome, e-mail e mensagem.');
   const button=formElement.querySelector('button[type="submit"]');button.disabled=true;button.textContent='ENVIANDO…';
-  try{await postPublicForm('/api/public/message',{name,email,phone,subject:subject.slice(0,100),message,companyWebsite});formElement.reset();toast('Mensagem recebida pela GRAÇA.');}
+  try{
+    await createContactMessage({name,email,phone,subject:subject.slice(0,100),message,companyWebsite});
+    if(!formElement?.reset)throw new Error('Formulário indisponível. Atualize a página e tente novamente.');
+    formElement.reset();toast('Mensagem recebida pela GRAÇA.');
+  }
   catch(error){console.error(error);toast(error.message||friendlyFirestoreError(error));}
   finally{button.disabled=false;button.textContent='ENVIAR MENSAGEM ↗';}
 };
@@ -1147,3 +1202,4 @@ $('#categoryFilter').addEventListener('change',renderProducts);
 $('#sortFilter').addEventListener('change',renderProducts);
 updateCatalogSubscriptions();
 renderProducts();renderCart();memberNav();
+

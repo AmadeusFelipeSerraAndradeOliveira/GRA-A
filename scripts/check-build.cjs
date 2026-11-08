@@ -4,16 +4,10 @@ const { spawnSync } = require('node:child_process');
 
 const root = path.resolve(__dirname, '..');
 const publicDir = path.join(root, 'public');
-const sourceFiles = [
-  'app.js', 'firebase.js', 'catalog-seed.js', 'dev-server.js',
-  'cloudinary-worker/src/index.js', 'functions/index.js'
-];
-const hostingFiles = [
-  'index.html', 'style.css', 'app.js', 'firebase.js', 'catalog-seed.js',
-  'assets/graca-editorial-background.jfif'
-];
-let failed = false;
-const fail = message => { failed = true; process.stderr.write(`Falha: ${message}\n`); };
+const sourceFiles = ['app.js', 'firebase.js', 'catalog-seed.js', 'cloudinary-config.js', 'dev-server.js'];
+const hostingFiles = ['index.html', 'style.css', 'app.js', 'firebase.js', 'catalog-seed.js', 'cloudinary-config.js', 'assets/graca-editorial-background.jfif'];
+const failed = [];
+const fail = message => failed.push(message);
 const ok = message => process.stdout.write(`OK ${message}.\n`);
 
 fs.mkdirSync(publicDir, { recursive: true });
@@ -30,8 +24,11 @@ for (const file of sourceFiles) {
   if (result.status !== 0) fail(`sintaxe em ${file}: ${result.stderr || result.stdout}`);
   else ok(`sintaxe de ${file}`);
 }
-for (const file of ['firebase.json', 'firestore.indexes.json', 'package.json', 'functions/package.json']) {
-  try { JSON.parse(fs.readFileSync(path.join(root, file), 'utf8')); ok(`JSON de ${file}`); }
+
+const jsonFiles = ['firebase.json', 'firestore.indexes.json', 'package.json'];
+const json = {};
+for (const file of jsonFiles) {
+  try { json[file] = JSON.parse(fs.readFileSync(path.join(root, file), 'utf8')); ok(`JSON de ${file}`); }
   catch (error) { fail(`JSON inválido em ${file}: ${error.message}`); }
 }
 for (const file of hostingFiles) {
@@ -40,47 +37,38 @@ for (const file of hostingFiles) {
     fail(`cópia divergente do Hosting: ${file}`);
   }
 }
-if (!failed) ok('arquivos públicos sincronizados');
 
 const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
 const rules = fs.readFileSync(path.join(root, 'firestore.rules'), 'utf8');
-const worker = fs.readFileSync(path.join(root, 'cloudinary-worker/src/index.js'), 'utf8');
-const functions = fs.readFileSync(path.join(root, 'functions/index.js'), 'utf8');
-const seed = fs.readFileSync(path.join(root, 'catalog-seed.js'), 'utf8');
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
-const workerConfig = fs.readFileSync(path.join(root, 'cloudinary-worker/wrangler.toml'), 'utf8');
+const cloudinary = fs.readFileSync(path.join(root, 'cloudinary-config.js'), 'utf8');
+const seed = fs.readFileSync(path.join(root, 'catalog-seed.js'), 'utf8');
 const checks = [
-  ['UID e origem IP impõem limite do servidor', /readFormRateLimits[\s\S]*lastSubmissionAt\(ipLimit\)/.test(functions) && /PUBLIC_FORM_RATE_LIMIT_KEY/.test(functions) && /normalizedSourceIp/.test(functions)],
-  ['pagamentos PIX/cartão limitam novas reservas também por rede de origem', /exports\.mercadopagoOrder[\s\S]*PUBLIC_FORM_RATE_LIMIT_KEY[\s\S]*sourceIpHash\(normalizedSourceIp\(req\), PUBLIC_FORM_RATE_LIMIT_KEY\.value\(\), "payment"\)/.test(functions)],
-  ['consulta do status de pagamento limita chamadas por conta e rede', /sourceIpHash\(normalizedSourceIp\(req\), PUBLIC_FORM_RATE_LIMIT_KEY\.value\(\), "payment-poll"\)/.test(functions) && /"paymentPoll", user\.uid, ipHash, 5000/.test(functions)],
-  ['cupom exige sessão verificada e benefício VIP ativo no servidor', /VIP_REQUIRED/.test(functions) && /user\.email_verified !== true/.test(functions) && /vipSnapshot\?\.data\(\)\?\.status !== "active"/.test(functions)],
-  ['rota de pagamento legado exige cupom publicado e VIP ativo', /liveVip\?\.data\(\)\?\.status !== "active"/.test(functions) && /coupon\.status !== "published"/.test(functions)],
-  ['limite de usos de cupom é reservado e liquidado ao fechar o pedido', /reservedUses: admin\.firestore\.FieldValue\.increment\(1\)/.test(functions) && /exports\.settleReservationCoupon/.test(functions) && /couponCounted/.test(functions)],
-  ['rotação de endereço IPv6 é agrupada por rede /64', /ipv6-64:/.test(functions) && /slice\(0, 4\)/.test(functions)],
-  ['criação pública de pedidos e mensagens passa pela API protegida', /match \/orders\/[\s\S]*?allow create: if false;/.test(rules) && /match \/messages\/[\s\S]*?allow create: if false;/.test(rules) && /publicReservation/.test(functions) && /publicMessage/.test(functions)],
-  ['GitHub Pages envia formulários ao endpoint Firebase autorizado por CORS', /amadeusfelipeserraandradeoliveira\.github\.io/.test(app) && /amadeusfelipeserraandradeoliveira\.github\.io/.test(functions) && /https:\/\/graca-454ff\.web\.app/.test(app)],
-  ['envios públicos validam token Firebase e gravam por transação', /requestUser\(req\)/.test(functions) && /db\.runTransaction\(async transaction =>/.test(functions)],
-  ['galeria admite no máximo cinco fotos re-hospedadas no Cloudinary', /multiple/.test(app) && /gallery\.length\+files\.length>5/.test(app) && /sourceUrl/.test(app) && /allowed_formats=/.test(worker)],
-  ['URLs externas passam pelo Worker e a URL segura retorna do Cloudinary', /validateRemoteImageUrl/.test(worker) && /result\.secure_url/.test(worker) && /isCloudinaryUrl\(result\.secure_url\)/.test(app)],
-  ['fotos e senha Cloudinary não são aceitas diretamente no banco', /data\.imageUrl\.matches\('https:\/\/res\\\\\.cloudinary\\\\\.com/.test(rules) && !/CLOUDINARY_API_SECRET/.test(html + app + fs.readFileSync(path.join(root, 'firebase.js'), 'utf8'))],
-  ['cadastros VIP só podem ser concedidos por administradores', /match \/vipUsers\/[\s\S]*?allow create: if isAdmin\(\) && validVipMember/.test(rules) && !/ensureVipMembership/.test(app)],
-  ['e-mail VIP é enfileirado após ativação e exige link configurado', /queueVipWelcomeEmail/.test(functions) && /collection\("mail"\)/.test(functions) && /inviteUrl/.test(functions)],
-  ['formulário de contato valida o elemento antes do reset', /const formElement=event\.currentTarget/.test(app) && /formElement\.reset\(\)/.test(app)],
-  ['cupom pode ser aplicado no carrinho e benefícios atualizam em tempo real', /id="couponForm"/.test(app) && /applyCartCoupon/.test(app) && /data-delete-offer/.test(app) && /onSnapshot\(query\(collection\(db,'coupons'\)/.test(app)],
-  ['painel de VIP, busca, bloqueio e WhatsApp estão ligados a dados em tempo real', /renderAdminCustomers/.test(app) && /adminVipSearch/.test(app) && /data-vip-status/.test(app) && /wa\.me\//.test(app) && /collection\(db, 'vipUsers'\)/.test(app)],
-  ['produtos podem ser buscados, desativados ou removidos sem apagar pedidos', /adminProductSearch/.test(app) && /toggleProductActive/.test(app) && /deleteProduct/.test(app) && /allow delete: if false;/.test(rules)],
-  ['marca usa as imagens e o slogan fornecidos', /brand-story-grid/.test(html) && /Gente, Moda, Comunidade/.test(html) && /v1794143992/.test(html)],
-  ['oito produtos de exemplo referenciam fotos enviadas', (seed.match(/id: 'seed-/g) || []).length === 8 && /v1794144056/.test(seed) && /v1794144028/.test(seed)],
-  ['rótulo e conteúdo de produto ficam como rascunho ao importar', /active:false/.test(app) && /priceMinCents/.test(seed) && /Math\.floor\(Math\.random\(\)\*46\)\+5/.test(app)],
-  ['relatórios financeiros e visão geral usam áreas separadas', /function renderFinanceAnalytics/.test(app) && /function renderAdminOverview/.test(app)],
-  ['ordens e cadastros de clientes não podem ser excluídos', /match \/orders\/[\s\S]*?allow delete: if false;/.test(rules) && /match \/customers\/[\s\S]*?allow delete: if false;/.test(rules)],
-  ['origem local está autorizada para o Worker de imagem', /127\.0\.0\.1:5501/.test(workerConfig)]
+  ['Firebase gratuito não depende de Functions nem de rotas pagas', !json['firebase.json']?.functions && !json['firebase.json']?.hosting?.rewrites && !/\/api\/(?:public|mercadopago)/.test(app)],
+  ['reservas gravam diretamente, em lote, com uma trava de telefone', /batch\.set\(orderRef,order\)/.test(app) && /reservationLimits',phoneDigits/.test(app) && /reservationCooldownWritten\(orderId, request\.resource\.data\.phone\)/.test(rules)],
+  ['o limite de reserva cruza sessões anônimas pelo telefone e aguarda 30 segundos', /match \/reservationLimits/.test(rules) && /duration\.value\(30, 's'\)/.test(rules) && /phone\.matches\('\^\[0-9\]\{10,13\}\$'\)/.test(rules)],
+  ['mensagens usam gravação direta e intervalo pelo e-mail', /createContactMessage\(/.test(app) && /messageLimits',normalizedEmail/.test(app) && /messageCooldownWritten\(messageId, data\.email\)/.test(rules)],
+  ['pedidos, clientes e limitadores não podem ser apagados ou lidos publicamente', /match \/orders\/[\s\S]*?allow delete: if false;/.test(rules) && /match \/customers\/[\s\S]*?allow delete: if false;/.test(rules) && /match \/reservationLimits[\s\S]*?allow get, list, delete: if false;/.test(rules) && /match \/messageLimits[\s\S]*?allow get, list, delete: if false;/.test(rules)],
+  ['estoque pode ser ajustado apenas por administradores em mudanças limitadas', /function validStockAdjustment\([\s\S]*affectedKeys\(\)\.hasOnly\(\['stock', 'updatedAt'\]\)/.test(rules) && /allow update: if validStockAdjustment\(\)/.test(rules)],
+  ['promoções do carrinho exigem cupom publicado e membro VIP ativo', /id="couponForm"/.test(app) && /applyCartCoupon/.test(app) && /function validReservationCoupon[\s\S]*?isActiveVip\(\)[\s\S]*?data\.couponCode/.test(rules)],
+  ['VIP e configurações continuam limitados a membros e administradores', /match \/vipUsers\/[\s\S]*?allow list: if isAdmin\(\)/.test(rules) && /settingId == 'vip' && \(isAdmin\(\) \|\| isActiveVip\(\)\)/.test(rules)],
+  ['formulário de contato confere o elemento antes de limpar', /const formElement=event\.currentTarget/.test(app) && /if\(!formElement\?\.reset\)/.test(app)],
+  ['Cloudinary usa preset unsigned e grava somente secure_url e public_id', /uploadPreset: 'graca_products_unsigned_v1'/.test(cloudinary) && /api\.cloudinary\.com\/v1_1/.test(app) && /body\.append\('upload_preset'/.test(app) && /result\.secure_url/.test(app) && /CLOUDINARY_API_SECRET/.test(app) === false],
+  ['galeria aceita até cinco fotos e URLs HTTPS re-hospedadas no Cloudinary', /multiple/.test(app) && /gallery\.length\+files\.length>5/.test(app) && /body\.append\('file',url\.href\)/.test(app)],
+  ['alerta de reserva aparece em tempo real no painel aberto', /snapshot\.docChanges\(\)/.test(app) && /notifyAdminOfNewReservation/.test(app) && /Notification\.requestPermission/.test(app)],
+  ['botão WhatsApp prepara a mensagem para o número administrativo informado', /wa\.me\/5563993051964/.test(app) && /adminReservationAlertLink/.test(app)],
+  ['conta administrativa requer e-mail confirmado e autorização própria', /request\.auth\.token\.email_verified == true/.test(rules) && /exists\(\/databases\/\$\(database\)\/documents\/admins/.test(rules)],
+  ['custos do catálogo permanecem em coleção privada', /match \/productCosts\/[\s\S]*?allow get, list: if isAdmin\(\)/.test(rules)],
+  ['produtos de exemplo usam imagens e permanecem como rascunho até revisão', (seed.match(/id: 'seed-/g) || []).length === 8 && /active:false/.test(app)],
+  ['loja mantém título, slogan e formulário da marca', /Gente, Moda e Comunidade/.test(html) && /id="contactForm"/.test(html)],
+  ['regras usam negação padrão', /match \/\{document=\*\*\}[\s\S]*allow read, write: if false;/.test(rules)]
 ];
+
 for (const [label, passed] of checks) passed ? ok(label) : fail(label);
+if (failed.length) {
+  for (const message of failed) process.stderr.write(`Falha: ${message}\n`);
+  process.exit(1);
+}
+ok('arquivos públicos sincronizados');
+process.stdout.write('Verificação estática local concluída. O processo não cria dados de teste no banco de produção.\n');
 
-const rulesAudit = fs.readFileSync(path.join(root, 'FIRESTORE_RULES_REVIEW.md'), 'utf8');
-if (/allow create: if false/.test(rules) && /publicReservation|publicMessage/.test(rulesAudit + functions)) ok('regras mantêm criação pública fora do cliente');
-else fail('regras não estão ligadas à API de formulários');
-
-if (failed) process.exit(1);
-process.stdout.write('Verificação local concluída. Isso não substitui Firebase Emulator nem um envio de teste em produção.\n');

@@ -1,11 +1,5 @@
 {
   "indexes": [],
-  "fieldOverrides": [
-    {
-      "collectionGroup": "submissionRateLimits",
-      "fieldPath": "expireAt",
-      "ttl": true,
-      "indexes": []
-    }
-  ]
+  "fieldOverrides": []
 }
+

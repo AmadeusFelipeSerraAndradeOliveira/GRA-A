@@ -131,3 +131,4 @@ export const exampleProductTemplates = [
     sizes: ['P', 'M', 'G']
   }
 ];
+

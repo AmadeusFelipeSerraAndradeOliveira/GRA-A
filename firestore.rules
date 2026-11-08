@@ -179,6 +179,19 @@ service cloud.firestore {
         && (items.size() < 6 || validReservationItem(items[5]));
     }
 
+    function validReservationCoupon(data) {
+      let path = /databases/$(database)/documents/coupons/$(data.couponCode);
+      return (data.couponCode == '' && data.couponPercent == 0 && data.discountCents == 0)
+        || (isActiveVip()
+          && data.couponCode.matches('^[A-Z0-9_-]{3,30}$')
+          && data.couponPercent >= 1 && data.couponPercent <= 99
+          && exists(path)
+          && get(path).data.status == 'published'
+          && get(path).data.value == data.couponPercent
+          && (!('maxUses' in get(path).data)
+            || get(path).data.uses + get(path).data.reservedUses < get(path).data.maxUses));
+    }
+
     function validReservationTotal(data) {
       let subtotal = data.items[0].unitPriceCents * data.items[0].quantity
           + (data.items.size() > 1 ? data.items[1].unitPriceCents * data.items[1].quantity : 0)
@@ -189,14 +202,13 @@ service cloud.firestore {
       return data.totalCents is int && data.totalCents >= 0
         && ((!('couponCode' in data) && !('couponPercent' in data) && !('subtotalCents' in data) && !('discountCents' in data)
             && data.totalCents == subtotal && data.totalCents > 0)
-          || (data.couponCode is string && data.couponPercent is int
+          || (data.keys().hasAll(['couponCode', 'couponPercent', 'subtotalCents', 'discountCents'])
+            && data.couponCode is string && data.couponPercent is int
             && data.subtotalCents is int && data.subtotalCents == subtotal
             && data.discountCents is int && data.couponPercent >= 0 && data.couponPercent <= 99
             && data.discountCents == math.round(data.subtotalCents * data.couponPercent / 100)
             && data.totalCents == data.subtotalCents - data.discountCents
-            && ((data.couponCode == '' && data.couponPercent == 0)
-              || (data.couponCode is string && data.couponCode.matches('^[A-Z0-9_-]{3,30}$')
-                && data.couponPercent >= 1 && data.couponPercent <= 99))));
+            && validReservationCoupon(data)));
     }
 
     function validAddress(data) {
@@ -221,7 +233,7 @@ service cloud.firestore {
         && data.uid == request.auth.uid
         && data.confirmationCode is string && data.confirmationCode.size() >= 10 && data.confirmationCode.size() <= 32
         && data.customerName is string && data.customerName.size() > 0 && data.customerName.size() <= 120
-        && data.phone is string && data.phone.size() >= 7 && data.phone.size() <= 40
+        && data.phone is string && data.phone.matches('^[0-9]{10,13}$')
         && validReservationItems(data.items)
         && validReservationTotal(data)
         && validAddress(data)
@@ -232,7 +244,8 @@ service cloud.firestore {
         && data.statusHistory == ['Aguardando confirmação']
         && data.stockApplied == false && data.stockRestored == false
         && validSalesMetadata(data)
-        && data.createdAt is timestamp && data.updatedAt is timestamp;
+        && data.createdAt is timestamp && data.createdAt == request.time
+        && data.updatedAt is timestamp && data.updatedAt == request.time;
     }
 
     function validStatusHistory(history) {
@@ -297,9 +310,9 @@ service cloud.firestore {
         && data.confirmationCode is string && data.confirmationCode.size() >= 10 && data.confirmationCode.size() <= 32
         && data.customerName is string && data.customerName.size() > 0 && data.customerName.size() <= 120
         && data.phone is string && data.phone.size() >= 7 && data.phone.size() <= 40
-        && validReservationItems(data.items)
-        && validReservationTotal(data)
-        && validAddress(data)
+        // Item snapshots and totals were checked when the request was created.
+        // Rechecking them against today's catalog would block later status changes
+        // after stock reaches zero or a product price is edited.
         && data.pickupDetails is string && data.pickupDetails.size() <= 160
         && data.notes is string && data.notes.size() <= 500
         && data.marketingConsent is bool
@@ -375,7 +388,7 @@ service cloud.firestore {
         && data.uid is string && data.uid.size() > 0 && data.uid.size() <= 128
         && data.name is string && data.name.size() > 0 && data.name.size() <= 120
         && data.email is string && data.email.size() > 3 && data.email.size() <= 254
-        && data.email.matches('^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$')
+        && data.email.matches('^[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}$')
         && (!('phone' in data) || (data.phone is string && data.phone.size() <= 40))
         && data.subject is string && data.subject.size() > 0 && data.subject.size() <= 100
         && data.message is string && data.message.size() >= 8 && data.message.size() <= 1500
@@ -383,39 +396,66 @@ service cloud.firestore {
         && data.createdAt is timestamp && data.updatedAt is timestamp;
     }
 
-    function validMessage(data) {
+    function validMessage(data, messageId) {
       return signedIn() && validMessageData(data)
-        && data.uid == request.auth.uid && data.status == 'Nova';
+        && data.uid == request.auth.uid && data.status == 'Nova'
+        && data.createdAt == request.time && data.updatedAt == request.time
+        && messageCooldownWritten(messageId, data.email);
     }
 
-    function validSubmissionCooldown(data, uid) {
-      return data.keys().hasAll(['uid', 'lastSubmittedAt'])
-        && data.keys().hasOnly(['uid', 'lastSubmittedAt'])
-        && data.uid == uid
+    function validReservationLimit(data, phone) {
+      return data.keys().hasAll(['phone', 'lastOrderId', 'lastSubmittedAt'])
+        && data.keys().hasOnly(['phone', 'lastOrderId', 'lastSubmittedAt'])
+        && data.phone == phone && phone.matches('^[0-9]{10,13}$')
+        && data.lastOrderId is string && data.lastOrderId.size() >= 10 && data.lastOrderId.size() <= 128
         && data.lastSubmittedAt is timestamp
         && data.lastSubmittedAt == request.time;
     }
 
-    function reservationCooldownWritten() {
-      let path = /databases/$(database)/documents/reservationLimits/$(request.auth.uid);
+    function reservationCooldownWritten(orderId, phone) {
+      let path = /databases/$(database)/documents/reservationLimits/$(phone);
       return signedIn() && existsAfter(path)
-        && getAfter(path).data.uid == request.auth.uid
+        && getAfter(path).data.phone == phone
+        && getAfter(path).data.lastOrderId == orderId
         && getAfter(path).data.lastSubmittedAt == request.time;
     }
 
-    function messageCooldownWritten() {
-      let path = /databases/$(database)/documents/messageLimits/$(request.auth.uid);
-      return signedIn() && existsAfter(path)
+    function reservationOrderWritten(phone, orderId) {
+      let path = /databases/$(database)/documents/orders/$(orderId);
+      return existsAfter(path)
         && getAfter(path).data.uid == request.auth.uid
+        && getAfter(path).data.phone == phone;
+    }
+
+    function validMessageLimit(data, email) {
+      return data.keys().hasAll(['email', 'lastMessageId', 'lastSubmittedAt'])
+        && data.keys().hasOnly(['email', 'lastMessageId', 'lastSubmittedAt'])
+        && data.email == email && email.matches('^[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}$')
+        && data.lastMessageId is string && data.lastMessageId.size() >= 10 && data.lastMessageId.size() <= 128
+        && data.lastSubmittedAt is timestamp && data.lastSubmittedAt == request.time;
+    }
+
+    function messageCooldownWritten(messageId, email) {
+      let path = /databases/$(database)/documents/messageLimits/$(email);
+      return signedIn() && existsAfter(path)
+        && getAfter(path).data.email == email
+        && getAfter(path).data.lastMessageId == messageId
         && getAfter(path).data.lastSubmittedAt == request.time;
     }
 
-    function validCloudinarySetting(data) {
-      return data.keys().hasAll(['workerUrl', 'updatedAt'])
-        && data.keys().hasOnly(['workerUrl', 'updatedAt'])
-        && data.workerUrl is string && data.workerUrl.size() <= 2048
-        && (data.workerUrl == '' || data.workerUrl.matches('https://.*\\.workers\\.dev(/upload)?'))
-        && data.updatedAt is timestamp;
+    function messageWritten(email, messageId) {
+      let path = /databases/$(database)/documents/messages/$(messageId);
+      return existsAfter(path)
+        && getAfter(path).data.uid == request.auth.uid
+        && getAfter(path).data.email == email;
+    }
+
+    function validStockAdjustment() {
+      return isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stock', 'updatedAt'])
+        && request.resource.data.stock is int && request.resource.data.stock >= 0 && request.resource.data.stock <= 100000
+        && request.resource.data.updatedAt is timestamp
+        && (!('cost' in resource.data) || request.resource.data.cost == resource.data.cost);
     }
 
     function validTransition() {
@@ -475,7 +515,8 @@ service cloud.firestore {
       // them from customers until an admin completes the private-cost migration.
       allow get, list: if isAdmin() || (resource.data.active == true && !('cost' in resource.data));
       allow create: if isAdmin() && validProduct(request.resource.data);
-      allow update: if (isAdmin() && validProduct(request.resource.data)
+      allow update: if validStockAdjustment()
+        || (isAdmin() && validProduct(request.resource.data)
         && (('createdAt' in resource.data)
           ? request.resource.data.createdAt == resource.data.createdAt
           : !('createdAt' in request.resource.data)))
@@ -501,8 +542,11 @@ service cloud.firestore {
       // get de documentos ausentes não expõe pedidos existentes de terceiros.
       allow get: if isAdmin() || (signedIn() && (resource == null || resource.data.uid == request.auth.uid));
       allow list: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
-      // Public reservations are written only by the rate-limited Functions API.
-      allow create: if false;
+      // Requests are paired atomically with a 30-second limiter keyed by the
+      // normalized WhatsApp number. The same phone cannot bypass the limit by
+      // starting another anonymous Firebase session.
+      allow create: if validReservation(request.resource.data)
+        && reservationCooldownWritten(orderId, request.resource.data.phone);
       allow update: if isAdmin()
         && validAdminReservation(request.resource.data)
         && validTransition()
@@ -513,11 +557,15 @@ service cloud.firestore {
     }
 
     match /reservationLimits/{uid} {
-      allow read, write: if false;
-    }
-
-    match /submissionRateLimits/{rateLimitId} {
-      allow read, write: if false;
+      allow get, list, delete: if false;
+      allow create: if signedIn()
+        && validReservationLimit(request.resource.data, uid)
+        && reservationOrderWritten(uid, request.resource.data.lastOrderId);
+      allow update: if signedIn()
+        && validReservationLimit(request.resource.data, uid)
+        && resource.data.phone == uid
+        && request.time >= resource.data.lastSubmittedAt + duration.value(30, 's')
+        && reservationOrderWritten(uid, request.resource.data.lastOrderId);
     }
 
     match /coupons/{couponId} {
@@ -551,8 +599,9 @@ service cloud.firestore {
 
     match /messages/{messageId} {
       allow get, list: if isAdmin();
-      // Public messages are written only by the rate-limited Functions API.
-      allow create: if false;
+      // The email-keyed limiter applies across anonymous sessions and is
+      // committed in the same atomic batch as the contact message.
+      allow create: if validMessage(request.resource.data, messageId);
       allow update: if isAdmin()
         && validMessageData(request.resource.data)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
@@ -568,14 +617,20 @@ service cloud.firestore {
     }
 
     match /messageLimits/{uid} {
-      allow read, write: if false;
+      allow get, list, delete: if false;
+      allow create: if signedIn()
+        && validMessageLimit(request.resource.data, uid)
+        && messageWritten(uid, request.resource.data.lastMessageId);
+      allow update: if signedIn()
+        && validMessageLimit(request.resource.data, uid)
+        && resource.data.email == uid
+        && request.time >= resource.data.lastSubmittedAt + duration.value(30, 's')
+        && messageWritten(uid, request.resource.data.lastMessageId);
     }
 
     match /settings/{settingId} {
-      allow get: if settingId == 'cloudinary' || (settingId == 'vip' && (isAdmin() || isActiveVip()));
+      allow get: if settingId == 'vip' && (isAdmin() || isActiveVip());
       allow list: if false;
-      allow create, update: if isAdmin() && settingId == 'cloudinary'
-        && validCloudinarySetting(request.resource.data);
       allow create, update: if isAdmin() && settingId == 'vip' && validVipSetting(request.resource.data);
       allow delete: if false;
     }
@@ -602,3 +657,4 @@ service cloud.firestore {
     }
   }
 }
+
