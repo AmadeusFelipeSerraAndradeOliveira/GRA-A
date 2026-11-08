@@ -204,8 +204,16 @@ discounts = [];
 const safeDate = value => value?.toDate ? value.toDate() : new Date(value || Date.now());
 const productCents = p => Math.round(Number(p.price || 0) * (100 - Math.max(0, Math.min(99, Number(p.discount || 0)))));
 const displayTotal = order => order?.status==='Concluído'&&Number.isFinite(Number(order.saleTotalCents))?Number(order.saleTotalCents)/100:Number.isFinite(Number(order.totalCents))?Number(order.totalCents)/100:Number(order.total||0);
-const isCloudinaryUrl = value => typeof value === 'string' && /^https:\/\/res\.cloudinary\.com\/[a-z0-9_-]+\/image\/upload\//i.test(value);
-const isCloudinaryPublicId = value => typeof value === 'string' && /^graca\/products\/[a-z0-9_-]{20,60}$/i.test(value);
+const isCloudinaryUrl = value => {
+  if (typeof value !== 'string') return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.hostname === 'res.cloudinary.com'
+      && url.pathname.startsWith(`/${CLOUDINARY_CONFIG.cloudName}/image/upload/`);
+  } catch { return false; }
+};
+const isCloudinaryPublicId = value => typeof value === 'string'
+  && value.length <= 255 && /^[A-Za-z0-9_-][A-Za-z0-9_/-]*$/.test(value) && !value.includes('//');
 const galleryForProduct = product => {
   const listed = Array.isArray(product?.imageGallery) ? product.imageGallery : [];
   const source = listed.length ? listed : [{imageUrl:product?.imageUrl,imagePublicId:product?.imagePublicId}];
@@ -449,6 +457,8 @@ async function refreshVipAccessNotice(user) {
 }
 
 renderProducts = function() {
+  const productGrid=$('#productGrid'), categoryFilter=$('#categoryFilter'), featuredProducts=$('#featuredProducts');
+  if(!productGrid&&!categoryFilter&&!featuredProducts)return;
   const term = ($('#searchInput')?.value || '').trim().toLowerCase();
   const cat = $('#categoryFilter')?.value || 'Todas';
   const sort = $('#sortFilter')?.value || 'featured';
@@ -459,11 +469,11 @@ renderProducts = function() {
   if (sort === 'featured') list.sort((a,b) => Number(b.featured)-Number(a.featured));
   const card = (p,i) => {const photo=cloudinaryDeliveryUrl(p.imageUrl,700);return `<article class="product-card" data-product="${htm(p.id)}"><div class="product-visual ${htm(p.color||'pink')}${photo?' has-photo':''}" data-mark="${htm(p.mark||'GRAÇA')}">${photo?`<img class="product-photo" src="${htm(photo)}" alt="${htm(p.name)}" loading="lazy">`:''}<span class="product-index">GMC / ${String(i+1).padStart(2,'0')}</span><button class="quick-add" data-add="${htm(p.id)}" aria-label="Escolher ${htm(p.name)}">+</button></div><div class="product-info"><div><h4>${htm(p.name)}</h4><p>${htm(String(p.category||'').toUpperCase())}</p></div><span class="product-price">${Number(p.discount||0)?`<del>${money(Number(p.price))}</del> `:''}<b>${money(productCents(p)/100)}</b></span></div></article>`;};
   const empty = catalogLoaded ? '<div class="empty-state">O CATÁLOGO ESTÁ SENDO PREPARADO PELA GRAÇA.</div>' : '<div class="empty-state">CARREGANDO A COLEÇÃO…</div>';
-  $('#productGrid').innerHTML = list.length ? list.map(card).join('') : empty;
+  if(productGrid)productGrid.innerHTML = list.length ? list.map(card).join('') : empty;
   const categoriesList = ['Todas', ...new Set([...categoriesFromFirestore, ...activeProducts().map(p => p.category).filter(Boolean)])];
-  $('#categoryFilter').innerHTML = categoriesList.map(c => `<option value="${htm(c)}" ${c===cat?'selected':''}>${htm(c==='Todas'?'Todas as categorias':c)}</option>`).join('');
+  if(categoryFilter)categoryFilter.innerHTML = categoriesList.map(c => `<option value="${htm(c)}" ${c===cat?'selected':''}>${htm(c==='Todas'?'Todas as categorias':c)}</option>`).join('');
   const picks = activeProducts().filter(p => p.featured);
-  $('#featuredProducts').innerHTML = picks.length ? picks.map(card).join('') : '<div class="empty-state">A curadoria será exibida aqui.</div>';
+  if(featuredProducts)featuredProducts.innerHTML = picks.length ? picks.map(card).join('') : '<div class="empty-state">A curadoria será exibida aqui.</div>';
   $$('[data-product]').forEach(el => el.onclick = event => { if (!event.target.closest('[data-add]')) openProduct(el.dataset.product); });
   $$('[data-add]').forEach(button => button.onclick = event => { event.stopPropagation(); openProduct(button.dataset.add); });
 };
@@ -629,8 +639,8 @@ function whatsappLink(order) {
 
 function renderAdminOrders() {
   const pending=orders.filter(order=>order.status==='Aguardando confirmação').length;
-  const rows=orders.map(order=>`<tr><td><button class="mini-button" data-order-details="${htm(order.id)}">${htm(order.confirmationCode||order.id)}</button></td><td>${htm(order.customerName)}</td><td>${safeDate(order.createdAt).toLocaleString('pt-BR')}</td><td>${money(order.status==='Concluído'?Number(order.saleTotalCents)/100:displayTotal(order))}</td><td><span class="status ${order.status==='Aguardando confirmação'?'pending':''}">${htm(order.status)}</span></td><td>${whatsappLink(order)}</td><td>${order.status==='Entregue'?`<button class="mini-button primary" data-close-order="${htm(order.id)}">ENCERRAR VENDA</button>`:order.status==='Concluído'?'<span class="fine-print">VENDA REGISTRADA</span>':`<select data-order-status="${htm(order.id)}"><option value="">Atualizar…</option>${reservationStatuses.filter(status=>status!==order.status&&allowedNextStatus(order,status)).map(status=>`<option value="${htm(status)}">${htm(status)}</option>`).join('')}</select>`}</td></tr>`).join('');
-  $('#adminContent').innerHTML=`<div class="section-kicker">RESERVAS / TEMPO REAL</div><h2>PEDIDOS</h2><div class="admin-cards"><div class="metric"><span>AGUARDANDO CONFIRMAÇÃO</span><strong>${pending}</strong></div><div class="metric"><span>SOLICITAÇÕES CARREGADAS</span><strong>${orders.length}</strong></div><div class="metric"><span>VENDAS ENCERRADAS</span><strong>${orders.filter(order=>order.status==='Concluído').length}</strong></div></div>${rows?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>CÓDIGO</th><th>CLIENTE</th><th>DATA</th><th>VALOR</th><th>STATUS</th><th>WHATSAPP</th><th>AÇÃO</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty-state">NENHUMA SOLICITAÇÃO RECEBIDA.</div>'}<p class="fine-print">Solicitações pendentes não reduzem estoque. A confirmação valida e atualiza o estoque em uma transação. Uma venda só pode ser encerrada depois de marcada como entregue; o encerramento pede canal e forma de pagamento.</p>`;
+  const rows=orders.map(order=>`<tr><td><button class="mini-button" data-order-details="${htm(order.id)}">${htm(order.confirmationCode||order.id)}</button></td><td>${htm(order.customerName)}</td><td>${safeDate(order.createdAt).toLocaleString('pt-BR')}</td><td>${money(order.status==='Concluído'?Number(order.saleTotalCents)/100:displayTotal(order))}</td><td><span class="status ${order.status==='Aguardando confirmação'?'pending':''}">${htm(order.status)}</span></td><td>${whatsappLink(order)}</td><td>${order.status==='Entregue'?`<button class="mini-button primary" data-close-order="${htm(order.id)}">FINALIZAR PEDIDO</button>`:order.status==='Concluído'?'<span class="fine-print">PEDIDO FINALIZADO</span>':`<select data-order-status="${htm(order.id)}"><option value="">Atualizar…</option>${reservationStatuses.filter(status=>status!==order.status&&allowedNextStatus(order,status)).map(status=>`<option value="${htm(status)}">${htm(status)}</option>`).join('')}</select>`}</td></tr>`).join('');
+  $('#adminContent').innerHTML=`<div class="section-kicker">RESERVAS / TEMPO REAL</div><h2>PEDIDOS</h2><div class="admin-cards"><div class="metric"><span>AGUARDANDO CONFIRMAÇÃO</span><strong>${pending}</strong></div><div class="metric"><span>SOLICITAÇÕES CARREGADAS</span><strong>${orders.length}</strong></div><div class="metric"><span>VENDAS ENCERRADAS</span><strong>${orders.filter(order=>order.status==='Concluído').length}</strong></div></div>${rows?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>CÓDIGO</th><th>CLIENTE</th><th>DATA</th><th>VALOR</th><th>STATUS</th><th>WHATSAPP</th><th>AÇÃO</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty-state">NENHUMA SOLICITAÇÃO RECEBIDA.</div>'}<p class="fine-print">Solicitações pendentes não reduzem estoque. A confirmação valida e atualiza o estoque em uma transação. Para finalizar, marque o pedido como entregue e use o botão FINALIZAR PEDIDO; informe canal e forma de pagamento.</p>`;
   $$('[data-order-details]').forEach(button=>button.onclick=()=>showOrderDetails(orders.find(order=>order.id===button.dataset.orderDetails)));
   $$('[data-close-order]').forEach(button=>button.onclick=()=>closeOrderDialog(button.dataset.closeOrder));
   $$('[data-order-status]').forEach(select=>select.onchange=async()=>{if(!select.value)return;select.disabled=true;try{await changeReservationStatus(select.dataset.orderStatus,select.value);toast('Status atualizado.');}catch(error){console.error(error);toast(friendlyFirestoreError(error));select.disabled=false;}});
@@ -659,11 +669,11 @@ function closeOrderDialog(orderId) {
   const order=orders.find(item=>item.id===orderId);
   if(!order||order.status!=='Entregue')return toast('Só é possível encerrar uma venda depois da entrega.');
   const total=(displayTotal(order)).toFixed(2);
-  openModal(`<div class="section-kicker">VENDA / ${htm(order.confirmationCode||order.id)}</div><h2 id="modalTitle">ENCERRAR ATENDIMENTO.</h2><p>Informe onde a venda foi realizada e a forma de pagamento. O valor final pode ser ajustado antes de salvar.</p><form id="saleClosureForm" class="modal-form"><label>CANAL DA VENDA<select name="salesChannel" required>${salesChannels.map(channel=>`<option value="${htm(channel)}">${htm(channel)}</option>`).join('')}</select></label><label>FORMA DE PAGAMENTO<select name="paymentMethod" required>${paymentMethods.map(method=>`<option value="${htm(method)}">${htm(method)}</option>`).join('')}</select></label><label>VALOR FINAL DA VENDA (R$)<input name="saleTotal" type="number" min="0.01" max="1000000" step="0.01" value="${htm(total)}" required></label><div id="installmentFields" hidden><label>QUANTIDADE DE PARCELAS<select name="installmentCount">${Array.from({length:11},(_,index)=>index+2).map(count=>`<option value="${count}">${count} parcelas</option>`).join('')}</select></label><p id="installmentPreview" class="installment-preview" aria-live="polite"></p></div><p class="fine-print">O encerramento registra um histórico permanente da venda; pedidos não são apagados.</p><button class="pill-button dark" id="confirmSaleClosure">REGISTRAR VENDA CONCLUÍDA ↗</button></form>`);
+  openModal(`<div class="section-kicker">VENDA / ${htm(order.confirmationCode||order.id)}</div><h2 id="modalTitle">FINALIZAR PEDIDO.</h2><p>Informe onde a venda foi realizada e a forma de pagamento. O valor final pode ser ajustado antes de salvar.</p><form id="saleClosureForm" class="modal-form"><label>CANAL DA VENDA<select name="salesChannel" required>${salesChannels.map(channel=>`<option value="${htm(channel)}">${htm(channel)}</option>`).join('')}</select></label><label>FORMA DE PAGAMENTO<select name="paymentMethod" required>${paymentMethods.map(method=>`<option value="${htm(method)}">${htm(method)}</option>`).join('')}</select></label><label>VALOR FINAL DA VENDA (R$)<input name="saleTotal" type="number" min="0.01" max="1000000" step="0.01" value="${htm(total)}" required></label><div id="installmentFields" hidden><label>QUANTIDADE DE PARCELAS<select name="installmentCount">${Array.from({length:11},(_,index)=>index+2).map(count=>`<option value="${count}">${count} parcelas</option>`).join('')}</select></label><p id="installmentPreview" class="installment-preview" aria-live="polite"></p></div><p class="fine-print">A finalização registra canal, pagamento e valor no histórico do pedido.</p><button class="pill-button dark" id="confirmSaleClosure">CONFIRMAR FINALIZAÇÃO ↗</button></form>`);
   const form=$('#saleClosureForm'),method=form.elements.paymentMethod,count=form.elements.installmentCount,amount=form.elements.saleTotal,fields=$('#installmentFields'),preview=$('#installmentPreview');
   const syncInstallments=()=>{const parcelado=method.value==='Cartão de crédito parcelado';fields.hidden=!parcelado;if(!parcelado)return;const cents=Math.max(0,Math.round(Number(amount.value||0)*100)),parts=Number(count.value||2),each=Math.floor(cents/parts),last=cents-each*(parts-1);preview.textContent=`${parts-1} parcela(s) de ${money(each/100)} e a última de ${money(last/100)} · total ${money(cents/100)}`;};
   method.onchange=syncInstallments;count.onchange=syncInstallments;amount.oninput=syncInstallments;syncInstallments();
-  form.onsubmit=async event=>{event.preventDefault();const cents=Math.round(Number(amount.value)*100),installments=method.value==='Cartão de crédito parcelado'?Number(count.value):1;if(!Number.isInteger(cents)||cents<1||cents>100000000||installments<1||installments>12)return toast('Confira o valor final e a quantidade de parcelas.');const button=$('#confirmSaleClosure');button.disabled=true;button.textContent='REGISTRANDO…';try{await finalizeReservationSale(orderId,{salesChannel:String(form.elements.salesChannel.value),paymentMethod:String(method.value),saleTotalCents:cents,installmentCount:installments});closeModal();toast('Venda registrada e atendimento encerrado.');}catch(error){console.error(error);toast(friendlyFirestoreError(error));button.disabled=false;button.textContent='REGISTRAR VENDA CONCLUÍDA ↗';}};
+  form.onsubmit=async event=>{event.preventDefault();const cents=Math.round(Number(amount.value)*100),installments=method.value==='Cartão de crédito parcelado'?Number(count.value):1;if(!Number.isInteger(cents)||cents<1||cents>100000000||installments<1||installments>12)return toast('Confira o valor final e a quantidade de parcelas.');const button=$('#confirmSaleClosure');button.disabled=true;button.textContent='FINALIZANDO…';try{await finalizeReservationSale(orderId,{salesChannel:String(form.elements.salesChannel.value),paymentMethod:String(method.value),saleTotalCents:cents,installmentCount:installments});closeModal();toast('Pedido finalizado e venda registrada.');}catch(error){console.error(error);toast(friendlyFirestoreError(error));button.disabled=false;button.textContent='CONFIRMAR FINALIZAÇÃO ↗';}};
 }
 
 async function finalizeReservationSale(orderId,sale) {
@@ -721,7 +731,7 @@ function renderAdminProducts() {
   const listing=rows?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>PRODUTO</th><th>CATEGORIA</th><th>PREÇO</th><th>ESTOQUE</th><th>STATUS</th><th>AÇÃO</th></tr></thead><tbody>${rows}</tbody></table></div>`:`<div class="empty-state">${products.length?'NENHUM PRODUTO CORRESPONDE À BUSCA.':'NENHUM PRODUTO CADASTRADO NO FIRESTORE.'}</div>`;
   $('#adminContent').innerHTML=`<div class="section-kicker">CATÁLOGO / FIRESTORE</div><h2>PRODUTOS</h2><div class="admin-toolbar"><span>${products.length} produtos no Firestore</span><div><button id="cloudinarySetup" class="mini-button">CONFIGURAR UPLOAD</button> <button id="newProduct" class="mini-button primary">+ NOVO PRODUTO</button></div></div><p class="fine-print">As fotos são salvas no Cloudinary. Produtos de exemplo ficam ocultos até serem revisados. Excluir remove apenas o produto e o custo privado; registros de pedidos permanecem preservados.</p><div class="admin-filter-bar"><label>BUSCAR POR NOME OU CATEGORIA<input id="adminProductSearch" type="search" value="${htm(adminProductSearch)}" placeholder="Ex.: Jaqueta, Blazer..."></label></div><div class="admin-toolbar"><button id="importExampleProducts" class="mini-button">IMPORTAR ${exampleProductTemplates.length} RASCUNHOS COM FOTOS</button></div>${transferableLegacyProducts.length?'<button id="importLegacyProducts" class="mini-button">IMPORTAR CATÁLOGO DESTE NAVEGADOR</button>':''}${listing}<div id="cloudinaryEndpointStatus" class="fine-print"></div>`;
   $('#newProduct').onclick=()=>productEditor();
-  $('#cloudinarySetup').onclick=configureCloudinaryWorker;
+  $('#cloudinarySetup').onclick=configureCloudinaryUpload;
   $('#importExampleProducts').onclick=()=>importExampleProducts();
   $$('[data-product-edit]').forEach(button=>button.onclick=()=>productEditor(button.dataset.productEdit));
   $('#adminProductSearch').oninput=event=>{adminProductSearch=event.target.value;renderAdminProducts();const input=$('#adminProductSearch');input?.focus();input?.setSelectionRange(adminProductSearch.length,adminProductSearch.length);};
@@ -765,8 +775,12 @@ async function uploadProductPhoto(source) {
   body.append('upload_preset',CLOUDINARY_CONFIG.uploadPreset);
   const response=await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(CLOUDINARY_CONFIG.cloudName)}/image/upload`,{method:'POST',body});
   let result={};try{result=await response.json();}catch{}
-  if(!response.ok)throw new Error(result.error?.message||'O Cloudinary recusou o envio. Confira o preset unsigned e a pasta definida para graca/products.');
-  if(!isCloudinaryUrl(result.secure_url)||!isCloudinaryPublicId(result.public_id))throw new Error('A resposta do Cloudinary não corresponde à pasta de produtos. Confira o preset e tente novamente.');
+  if(!response.ok){
+    const cloudinaryError=String(result.error?.message||'');
+    if(/whitelisted for unsigned uploads/i.test(cloudinaryError))throw new Error(`O preset “${CLOUDINARY_CONFIG.uploadPreset}” ainda está Assinado. Altere o modo para Não assinado no Cloudinary e salve.`);
+    throw new Error(cloudinaryError||'O Cloudinary recusou o envio. Confira o nome e o modo Não assinado do preset.');
+  }
+  if(!isCloudinaryUrl(result.secure_url)||!isCloudinaryPublicId(result.public_id))throw new Error('O Cloudinary enviou a foto, mas retornou uma URL ou um ID inválido para esta conta. Confira a configuração do preset.');
   return {imageUrl:result.secure_url,imagePublicId:result.public_id};
 }
 
@@ -805,14 +819,21 @@ async function importExampleProducts() {
     toast(`${created} produto(s) de exemplo importado(s) como rascunho. Revise preço e estoque antes de publicar.`);
   }catch(error){
     console.error('Falha na importação de exemplos:',error);
-    toast(`${created} rascunho(s) importado(s). Falha no próximo envio: ${error.message||'verifique o Worker Cloudinary'}`);
+    toast(`${created} rascunho(s) importado(s). Falha no próximo envio: ${error.message||'verifique o preset Cloudinary'}`);
   }finally{importingExamples=false;}
 }
 
 function renderAdminMessages() {
-  const rows=messages.map(message=>`<tr><td>${safeDate(message.createdAt).toLocaleString('pt-BR')}</td><td>${htm(message.name)}</td><td><a href="mailto:${htm(message.email)}">${htm(message.email)}</a></td><td>${htm(message.phone||'—')}</td><td>${messageWhatsappLink(message)}</td><td>${htm(message.subject)}</td><td>${htm(message.message)}</td><td><select data-message-status="${htm(message.id)}"><option ${message.status==='Nova'?'selected':''}>Nova</option><option ${message.status==='Em atendimento'?'selected':''}>Em atendimento</option><option ${message.status==='Concluída'?'selected':''}>Concluída</option></select></td></tr>`).join('');
-  $('#adminContent').innerHTML=`<div class="section-kicker">ATENDIMENTO / TEMPO REAL</div><h2>MENSAGENS DE CONTATO</h2>${rows?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>DATA</th><th>NOME</th><th>E-MAIL</th><th>WHATSAPP</th><th>AÇÃO</th><th>ASSUNTO</th><th>MENSAGEM</th><th>STATUS</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty-state">NENHUMA MENSAGEM RECEBIDA.</div>'}`;
+  const rows=messages.map(message=>`<tr><td>${safeDate(message.createdAt).toLocaleString('pt-BR')}</td><td>${htm(message.name)}</td><td><a href="mailto:${htm(message.email)}">${htm(message.email)}</a></td><td>${htm(message.phone||'—')}</td><td>${messageWhatsappLink(message)}</td><td>${htm(message.subject)}</td><td>${htm(message.message)}</td><td><select data-message-status="${htm(message.id)}"><option ${message.status==='Nova'?'selected':''}>Nova</option><option ${message.status==='Em atendimento'?'selected':''}>Em atendimento</option><option ${message.status==='Concluída'?'selected':''}>Concluída</option></select></td><td><button class="mini-button danger" data-delete-message="${htm(message.id)}">EXCLUIR</button></td></tr>`).join('');
+  $('#adminContent').innerHTML=`<div class="section-kicker">ATENDIMENTO / TEMPO REAL</div><h2>MENSAGENS DE CONTATO</h2>${rows?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>DATA</th><th>NOME</th><th>E-MAIL</th><th>WHATSAPP</th><th>AÇÃO</th><th>ASSUNTO</th><th>MENSAGEM</th><th>STATUS</th><th>AÇÕES</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty-state">NENHUMA MENSAGEM RECEBIDA.</div>'}`;
   $$('[data-message-status]').forEach(select=>select.onchange=async()=>{const message=messages.find(item=>item.id===select.dataset.messageStatus);if(!message)return;select.disabled=true;try{await updateDoc(doc(db,'messages',message.id),{status:select.value,updatedAt:serverTimestamp()});}catch(error){toast(friendlyFirestoreError(error));select.disabled=false;}});
+  $$('[data-delete-message]').forEach(button=>button.onclick=()=>deleteAdminMessage(button.dataset.deleteMessage));
+}
+
+async function deleteAdminMessage(messageId) {
+  if(!isAdmin||!messageId||!confirm('Excluir esta mensagem de contato? Esta ação não pode ser desfeita.'))return;
+  try{await deleteDoc(doc(db,'messages',messageId));toast('Mensagem excluída.');}
+  catch(error){console.error(error);toast(friendlyFirestoreError(error));}
 }
 
 function messageWhatsappLink(message) {
@@ -826,12 +847,22 @@ function renderAdminCustomers() {
   const needle=adminVipSearch.trim().toLowerCase();
   const filteredVip=vipUsers.filter(member=>`${member.name||''} ${member.email||''} ${member.phone||''}`.toLowerCase().includes(needle));
   const vipRows=filteredVip.map(member=>`<tr><td>${htm(member.name)}</td><td>${htm(member.email)}</td><td>${htm(member.phone||'—')}</td><td>${member.status==='active'?'ATIVO':member.status==='blocked'?'BLOQUEADO':'REMOVIDO'}</td><td>${safeDate(member.createdAt).toLocaleDateString('pt-BR')}</td><td><div class="admin-actions"><button class="mini-button" data-vip-status="${htm(member.uid)}" data-next-status="${member.status==='blocked'?'active':'blocked'}">${member.status==='blocked'?'REATIVAR':'BLOQUEAR'}</button><button class="mini-button danger" data-vip-status="${htm(member.uid)}" data-next-status="removed">REMOVER VIP</button></div></td></tr>`).join('');
-  const customerRows=customers.map(customer=>[htm(customer.name),htm(customer.email),htm(customer.phone),customer.marketingConsent?'ACEITOU':'NÃO ACEITOU',safeDate(customer.createdAt).toLocaleDateString('pt-BR')]);
-  $('#adminContent').innerHTML=`<div class="section-kicker">CLIENTES / COMUNIDADE VIP</div><h2>CLIENTES E MEMBROS VIP</h2><p>O acesso VIP é separado do cadastro de cliente. Bloquear ou remover o vínculo VIP mantém a conta e o histórico do cliente.</p><div class="admin-toolbar"><span>${customers.length} contas · ${vipUsers.filter(member=>member.status==='active').length} membros VIP ativos</span><div><button id="vipInviteSetup" class="mini-button">CONFIGURAR LINK DO GRUPO</button> <button id="newVipMember" class="mini-button primary">+ CADASTRAR VIP</button></div></div><section class="finance-panel"><h3>MEMBROS VIP</h3><div class="admin-filter-bar"><label>BUSCAR NOME, E-MAIL OU TELEFONE<input id="adminVipSearch" type="search" value="${htm(adminVipSearch)}" placeholder="Digite para filtrar"></label></div>${filteredVip.length?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>NOME</th><th>E-MAIL</th><th>WHATSAPP</th><th>ACESSO</th><th>CADASTRO</th><th>AÇÕES</th></tr></thead><tbody>${vipRows}</tbody></table></div>`:'<div class="empty-state">NENHUM MEMBRO VIP CORRESPONDE À BUSCA.</div>'}</section><section class="finance-panel"><h3>CONTAS CADASTRADAS</h3>${customerRows.length?table(['NOME','E-MAIL','WHATSAPP','OFERTAS','CADASTRO'],customerRows):'<div class="empty-state">NENHUMA CONTA CADASTRADA. RESERVAS DE VISITANTES FICAM NA ABA PEDIDOS.</div>'}</section>`;
+  const customerRows=customers.map(customer=>[htm(customer.name),htm(customer.email),htm(customer.phone),customer.marketingConsent?'ACEITOU':'NÃO ACEITOU',safeDate(customer.createdAt).toLocaleDateString('pt-BR'),`<button class="mini-button danger" data-delete-customer="${htm(customer.uid||customer.id)}">EXCLUIR CADASTRO</button>`]);
+  $('#adminContent').innerHTML=`<div class="section-kicker">CLIENTES / COMUNIDADE VIP</div><h2>CLIENTES E MEMBROS VIP</h2><p>Excluir remove apenas a ficha em customers; a conta de login e os pedidos permanecem. A exclusão não apaga o histórico financeiro.</p><div class="admin-toolbar"><span>${customers.length} contas · ${vipUsers.filter(member=>member.status==='active').length} membros VIP ativos</span><div><button id="vipInviteSetup" class="mini-button">CONFIGURAR LINK DO GRUPO</button> <button id="newVipMember" class="mini-button primary">+ CADASTRAR VIP</button></div></div><section class="finance-panel"><h3>MEMBROS VIP</h3><div class="admin-filter-bar"><label>BUSCAR NOME, E-MAIL OU TELEFONE<input id="adminVipSearch" type="search" value="${htm(adminVipSearch)}" placeholder="Digite para filtrar"></label></div>${filteredVip.length?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>NOME</th><th>E-MAIL</th><th>WHATSAPP</th><th>ACESSO</th><th>CADASTRO</th><th>AÇÕES</th></tr></thead><tbody>${vipRows}</tbody></table></div>`:'<div class="empty-state">NENHUM MEMBRO VIP CORRESPONDE À BUSCA.</div>'}</section><section class="finance-panel"><h3>CONTAS CADASTRADAS</h3>${customerRows.length?table(['NOME','E-MAIL','WHATSAPP','OFERTAS','CADASTRO','AÇÕES'],customerRows):'<div class="empty-state">NENHUMA CONTA CADASTRADA. RESERVAS DE VISITANTES FICAM NA ABA PEDIDOS.</div>'}</section>`;
   $('#adminVipSearch').oninput=event=>{adminVipSearch=event.target.value;renderAdminCustomers();const input=$('#adminVipSearch');input?.focus();input?.setSelectionRange(adminVipSearch.length,adminVipSearch.length);};
   $('#vipInviteSetup').onclick=configureVipInvite;
   $('#newVipMember').onclick=manualVipEditor;
   $$('[data-vip-status]').forEach(button=>button.onclick=()=>updateVipMemberStatus(button.dataset.vipStatus,button.dataset.nextStatus));
+  $$('[data-delete-customer]').forEach(button=>button.onclick=()=>deleteCustomerRecord(button.dataset.deleteCustomer));
+}
+
+async function deleteCustomerRecord(uid) {
+  if(!isAdmin||!uid)return;
+  const customer=customers.find(item=>(item.uid||item.id)===uid);
+  const label=customer?.name||customer?.email||uid;
+  if(!confirm(`Excluir a ficha de ${label}? A conta Firebase, os pedidos e o histórico financeiro permanecerão. Esta ação não pode ser desfeita.`))return;
+  try{await deleteDoc(doc(db,'customers',uid));toast('Ficha do cliente excluída. Conta e pedidos foram preservados.');}
+  catch(error){console.error(error);toast(friendlyFirestoreError(error));}
 }
 
 async function configureVipInvite() {
@@ -866,8 +897,8 @@ async function saveCategory(name) {
   if(id)await setDoc(doc(db,'categories',id),{name:value,active:true,updatedAt:serverTimestamp()},{merge:true});
 }
 
-async function configureCloudinaryWorker() {
-  openModal(`<div class="section-kicker">IMAGENS / CLOUDINARY</div><h2 id="modalTitle">CONFIGURAR O ENVIO DE FOTOS.</h2><ol><li>Abra Cloudinary Console → Settings → Upload presets.</li><li>Crie o preset <strong>${htm(CLOUDINARY_CONFIG.uploadPreset)}</strong> em modo <strong>Unsigned</strong>.</li><li>Limite os formatos a JPG, PNG e WebP, escolha a pasta <strong>graca/products</strong> e bloqueie IDs de arquivo definidos pelo navegador.</li><li>Salve o preset. Depois, reabra o painel e envie uma foto ou URL HTTPS.</li></ol><p class="fine-print">O preset é público e permite uploads à conta Cloudinary. Restrinja os formatos e a pasta, acompanhe o uso e gire o nome do preset se observar abuso. Nenhum segredo da conta é colocado no site.</p>`);
+async function configureCloudinaryUpload() {
+  openModal(`<div class="section-kicker">IMAGENS / CLOUDINARY</div><h2 id="modalTitle">CONFIGURAR O ENVIO DE FOTOS.</h2><ol><li>Abra Cloudinary Console → Settings → Upload presets.</li><li>Use o preset <strong>${htm(CLOUDINARY_CONFIG.uploadPreset)}</strong> com modo <strong>Unsigned / Não assinado</strong>.</li><li>Limite os formatos a JPG, PNG e WebP, defina a pasta de ativos <strong>graca/products</strong> e gere o ID público automaticamente.</li><li>Salve o preset. Depois, reabra o painel e envie uma foto ou URL HTTPS.</li></ol><p class="fine-print">A pasta de ativos organiza a biblioteca; ela não precisa aparecer no ID público. O preset unsigned é público. Restrinja formatos, não permita sobrescrita nem IDs enviados pelo cliente e acompanhe o uso. Nenhum segredo da conta é colocado no site.</p>`);
 }
 
 // Product editor with a five-image gallery. Browser uploads use the public
@@ -1165,6 +1196,7 @@ $('#contactForm').onsubmit=async event=>{
 $('#searchInput').addEventListener('input',renderProducts);
 $('#categoryFilter').addEventListener('change',renderProducts);
 $('#sortFilter').addEventListener('change',renderProducts);
+window.addEventListener('pageshow',event=>{if(event.persisted)window.location.reload();});
 updateCatalogSubscriptions();
 renderProducts();renderCart();memberNav();
 
