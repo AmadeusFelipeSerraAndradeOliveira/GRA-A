@@ -11,7 +11,7 @@ import {
   updateProfile
 } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-auth.js";
 import {
-  collection, deleteField, doc, getDoc, getDocs, getFirestore, limit, onSnapshot, orderBy, query,
+  collection, deleteDoc, deleteField, doc, getDoc, getDocs, getFirestore, limit, onSnapshot, orderBy, query,
   runTransaction, serverTimestamp, setDoc, updateDoc, where, writeBatch
 } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js";
 import app from "./firebase.js";
@@ -39,7 +39,11 @@ let currentUser=null, selectedSize='M', adminTab='overview', isAdmin=false;
 const toast = msg => {const el=$('#toast');el.textContent=msg;el.classList.add('show');clearTimeout(toast.t);toast.t=setTimeout(()=>el.classList.remove('show'),2600)};
 function categories(){return ['Todas',...new Set(products.map(p=>p.category))]}
 function openModal(html){$('#modalContent').innerHTML=html;$('#modalBackdrop').classList.add('open');document.body.style.overflow='hidden'}
-function closeModal(){$('#modalBackdrop').classList.remove('open');document.body.style.overflow=''}
+function closeModal(){
+  vipOfferUnsubscribers?.forEach(unsubscribe=>unsubscribe());
+  vipOfferUnsubscribers=[];
+  $('#modalBackdrop').classList.remove('open');document.body.style.overflow='';
+}
 function openProduct(id){
  const p=products.find(x=>x.id===id);if(!p)return;selectedSize=p.sizes[0]||'Único';
  openModal(`<div class="product-detail"><div class="detail-art ${p.color}">${p.mark}</div><div><div class="section-kicker">GRAÇA / PRODUCT FILE</div><h2 id="modalTitle">${p.name}</h2><strong>${money(p.price)}</strong><p>${p.description}</p><p class="fine-print">ESTOQUE: ${p.stock} UNIDADES</p><label class="fine-print">SELECIONE O TAMANHO</label><div class="size-options">${p.sizes.map(s=>`<button data-size="${s}" class="${s===selectedSize?'selected':''}">${s}</button>`).join('')}</div><button class="pill-button dark" id="detailAdd" ${p.stock<1?'disabled':''}>ADICIONAR AO CARRINHO ↗</button><p class="fine-print">Entrega grátis em Palmas · TO.</p></div></div>`);
@@ -47,7 +51,7 @@ function openProduct(id){
  $('#detailAdd').onclick=()=>{addToCart(p.id,selectedSize);closeModal();openCart()};
 }
 function addToCart(id,size){const p=products.find(x=>x.id===id);if(!p||p.stock<1)return toast('Produto indisponível.');const item=cart.find(x=>x.id===id&&x.size===size);if(item)item.qty=Math.min(item.qty+1,p.stock);else cart.push({id,size,qty:1});saveAll();renderCart();toast('Peça adicionada ao carrinho!')}
-function openCart(){$('#cartDrawer').classList.add('open');$('#drawerScrim').classList.add('open');renderCart()}
+function openCart(){$('#cartDrawer').classList.add('open');$('#drawerScrim').classList.add('open');renderCart();if(cartCoupon&&appliedCartCoupon?.code!==cartCoupon)void applyCartCoupon(cartCoupon)}
 function closeCart(){$('#cartDrawer').classList.remove('open');$('#drawerScrim').classList.remove('open')}
 function trackOrder(id=''){openModal(`<div class="section-kicker">ORDER TRACKING</div><h2 id="modalTitle">ACOMPANHE SEU PEDIDO.</h2><form class="modal-form" id="trackForm"><label>CÓDIGO DO PEDIDO<input name="id" required value="${id}"></label><button class="pill-button dark">CONSULTAR ↗</button></form><div id="trackResult"></div>`);$('#trackForm').onsubmit=e=>{e.preventDefault();const code=new FormData(e.target).get('id').trim().toUpperCase(),o=orders.find(x=>x.id===code);$('#trackResult').innerHTML=o?`<div class="metric"><span>${o.id} · ${new Date(o.created).toLocaleString('pt-BR')}</span><strong>${o.status}</strong><p>${money(o.total)} · ${o.delivery}</p></div>`:'<div class="empty-state">NÃO ENCONTRAMOS ESSE PEDIDO.</div>'}}
 function adminLogin(){openModal(`<div class="section-kicker">GRAÇA / BACK OFFICE</div><h2 id="modalTitle">ÁREA ADMINISTRATIVA.</h2><p>Entre com uma conta autorizada. A autorização vem da coleção admins do Firebase ou da função administrativa segura da conta.</p><form class="modal-form" id="adminLogin"><label>E-MAIL<input name="email" type="email" autocomplete="username" required></label><label>SENHA<input name="password" type="password" autocomplete="current-password" required></label><button class="pill-button dark">ENTRAR NO PAINEL ↗</button></form><p class="fine-print">A conta precisa estar confirmada e autorizada em admins/{UID}.</p>`);$('#adminLogin').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);try{const credential=await signInWithEmailAndPassword(auth,String(f.get('email')).trim(),String(f.get('password')));if(!credential.user.emailVerified){isAdmin=false;toast('Confirme o e-mail desta conta antes de acessar o painel.');return}isAdmin=await hasAdminAccess(credential.user);if(!isAdmin){toast('Acesso negado. Confira se o UID desta conta existe em admins no Firestore.');return}currentUser=profileFor(credential.user);memberNav();closeModal();renderAdmin()}catch(error){toast(authError(error))}}}
@@ -83,9 +87,8 @@ window.addEventListener('hashchange',()=>{if(location.hash==='#admin')openAdmin(
 
 // Prévia local das funcionalidades GRAÇA. Não usar para dados pessoais ou cobrança real.
 let comments=get('comments',[]), cartCoupon=get('cartCoupon',''), pendingMemberAction='', orderStatusTab='Todos', searchEvents=get('searchEvents',[]);
-const VIP_LINK='https://chat.whatsapp.com/E32OubB01g9Kqlll1paQvn';
 const htm=v=>String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const unitPrice=p=>Math.round(Number(p.price||0)*(100-Math.max(0,Math.min(100,Number(p.discount||0)))))/100;
+const unitPrice=p=>Math.round(Number(p.price||0)*(100-Math.max(0,Math.min(99,Number(p.discount||0)))))/100;
 const couponOk=code=>discounts.find(d=>d.code===String(code||'').trim().toUpperCase()&&d.active&&(d.maxUses==null||Number(d.uses||0)<Number(d.maxUses)));
 function saveAll(){set('products',products);set('cart',cart);set('orders',orders);set('customers',customers);set('messages',messages);set('discounts',discounts);set('comments',comments);set('cartCoupon',cartCoupon);set('searchEvents',searchEvents)}
 function renderProducts(){
@@ -98,7 +101,7 @@ function renderProducts(){
  const picks=products.filter(p=>p.featured),box=$('#featuredProducts');box.innerHTML=picks.length?picks.map(card).join(''):'<div class="empty-state">A curadoria será exibida aqui.</div>';
  $$('[data-product]').forEach(el=>el.onclick=e=>{if(!e.target.closest('[data-add]'))openProduct(el.dataset.product)});$$('[data-add]').forEach(b=>b.onclick=e=>{e.stopPropagation();openProduct(b.dataset.add)});
 }
-function cartTotals(){const sub=cart.reduce((s,i)=>s+unitPrice(products.find(p=>String(p.id)===String(i.id))||{price:0})*i.qty,0),coupon=couponOk(cartCoupon),off=coupon?sub*coupon.value/100:0;return{sub,coupon,off,total:Math.max(0,sub-off)}}
+function cartTotalsLegacy(){const sub=cart.reduce((s,i)=>s+unitPrice(products.find(p=>String(p.id)===String(i.id))||{price:0})*i.qty,0),coupon=couponOk(cartCoupon),off=coupon?sub*coupon.value/100:0;return{sub,coupon,off,total:Math.max(0,sub-off)}}
 function renderCart(){
  $('#cartCount').textContent=cart.reduce((s,i)=>s+i.qty,0);
  $('#cartItems').innerHTML=cart.length?cart.map((i,n)=>{const p=products.find(x=>String(x.id)===String(i.id));return p?'<div class="cart-line"><div class="cart-thumb">'+htm(p.mark)+'</div><div><h4>'+htm(p.name)+'</h4><small>'+htm(i.size)+' · '+money(unitPrice(p))+'</small><div class="qty-controls"><button data-q="'+n+'" data-delta="-1">−</button>'+i.qty+'<button data-q="'+n+'" data-delta="1">+</button></div></div><button data-rm="'+n+'">×</button></div>':''}).join(''):'<div class="empty-state">SEU CARRINHO ESTÁ VAZIO.</div>';
@@ -119,7 +122,7 @@ function authError(error){const messages={
 function profileFor(user){
  if(!user)return null;
  const saved=customers.find(c=>c.uid===user.uid)||customers.find(c=>c.email===user.email)||{};
- return {...saved,id:user.uid,uid:user.uid,name:user.displayName||saved.name||user.email.split('@')[0],email:user.email,phone:saved.phone||'',vip:Boolean(user.emailVerified&&saved.vip),emailVerified:user.emailVerified,address:saved.address||{},created:saved.created||new Date().toISOString()};
+ return {...saved,id:user.uid,uid:user.uid,name:user.displayName||saved.name||(user.email?user.email.split('@')[0]:'Visitante'),email:user.email||'',phone:saved.phone||'',vip:Boolean(user.emailVerified&&saved.vip),emailVerified:user.emailVerified,address:saved.address||{},created:saved.created||new Date().toISOString()};
 }
 function saveCustomerProfile(profile){
  const index=customers.findIndex(c=>c.uid===profile.uid||c.email===profile.email);
@@ -147,7 +150,7 @@ function clientMenu(){
 }
 function customerArea(){clientMenu()}
 function vipForm(){currentUser?vipPage():accountModal('signup')}
-function vipPage(){if(!currentUser)return accountModal('login');openModal('<div class="section-kicker">COMUNIDADE VIP</div><h2 id="modalTitle">VOCÊ FAZ PARTE.</h2><p>Descontos VIP e prévias dos próximos drops.</p><a class="pill-button dark" href="'+VIP_LINK+'" target="_blank" rel="noopener">ENTRAR NO GRUPO DO WHATSAPP ↗</a>')}
+function vipPage(){}
 function orderHistory(){const mine=orders.filter(o=>currentUser&&o.email===currentUser.email);openModal('<div class="section-kicker">PEDIDOS</div><h2 id="modalTitle">STATUS DO PEDIDO</h2>'+(mine.length?mine.map(o=>'<article class="order-card"><strong>'+htm(o.id)+' · '+htm(o.status)+'</strong><span>'+money(o.total)+'</span></article>').join(''):'<div class="empty-state">SEUS PEDIDOS APARECERÃO AQUI.</div>'))}
 function profileEditor(){if(!currentUser)return accountModal('login');const a=currentUser.address||{};openModal('<h2 id="modalTitle">PERFIL</h2><form id="profileForm" class="modal-form"><label>NOME<input name="name" value="'+htm(currentUser.name)+'" required></label><label>WHATSAPP<input name="phone" value="'+htm(currentUser.phone)+'"></label><label>CEP<input name="zip" value="'+htm(a.zip)+'"></label><label>RUA / NÚMERO<input name="street" value="'+htm(a.street)+'"></label><label>COMPLEMENTO<input name="complement" value="'+htm(a.complement)+'"></label><label>BAIRRO<input name="district" value="'+htm(a.district)+'"></label><label>CIDADE<input name="city" value="'+htm(a.city)+'"></label><label>ESTADO<input name="state" value="'+htm(a.state)+'"></label><button class="pill-button dark">SALVAR PERFIL</button></form>');$('#profileForm').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);currentUser.name=f.get('name');currentUser.phone=f.get('phone');currentUser.address={zip:f.get('zip'),street:f.get('street'),complement:f.get('complement'),district:f.get('district'),city:f.get('city'),state:f.get('state')};try{await updateProfile(auth.currentUser,{displayName:currentUser.name});saveCustomerProfile(currentUser);memberNav();clientMenu()}catch(error){toast(authError(error))}}}
 function supportPanel(){if(!currentUser)return accountModal('login');const mine=messages.filter(m=>m.email===currentUser.email);openModal('<h2 id="modalTitle">MENSAGENS DE SUPORTE</h2>'+(mine.length?mine.map(m=>'<article class="support-message"><b>'+htm(m.subject)+'</b><p>'+htm(m.message)+'</p><p><strong>RESPOSTA:</strong> '+htm(m.reply||'Aguardando resposta')+'</p></article>').join(''):'<p>Ainda não há mensagens.</p>')+'<form id="supportForm" class="modal-form"><label>ASSUNTO<input name="subject" required></label><label>MENSAGEM<textarea name="message" required></textarea></label><button class="pill-button dark">ENVIAR</button></form>');$('#supportForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);messages.unshift({id:uid(),name:currentUser.name,email:currentUser.email,subject:f.get('subject'),message:f.get('message'),created:new Date().toISOString(),reply:''});saveAll();supportPanel()}}
@@ -159,7 +162,7 @@ function productEditor(id=''){
  throw new Error('O editor seguro de produtos ainda está sendo inicializado.');
  const p=products.find(x=>String(x.id)===String(id))||{name:'',category:'Blusas',price:'',cost:'',discount:0,stock:0,sizes:['P','M','G'],color:'pink',mark:'GRAÇA',description:'',featured:false,imageUrl:''};let image=p.imageUrl||'';
  const gallery=[...new Set(['assets/graca-editorial-background.jfif',...products.map(x=>x.imageUrl).filter(Boolean)])];
- openModal('<h2 id="modalTitle">'+(id?'EDITAR PEÇA':'NOVA PEÇA')+'</h2><form id="productForm" class="modal-form"><label>NOME<input name="name" required value="'+htm(p.name)+'"></label><label>CATEGORIA<input name="category" required value="'+htm(p.category)+'"></label><label>PREÇO DE VENDA<input name="price" type="number" min="0" step=".01" required value="'+htm(p.price)+'"></label><label>CUSTO DE AQUISIÇÃO (PARA MARGEM)<input name="cost" type="number" min="0" step=".01" value="'+htm(p.cost??'')+'"></label><label>DESCONTO INDIVIDUAL (%)<input name="discount" type="number" min="0" max="100" value="'+htm(p.discount||0)+'"></label><label>ESTOQUE<input name="stock" type="number" min="0" value="'+htm(p.stock)+'"></label><label>TAMANHOS<input name="sizes" value="'+htm((p.sizes||[]).join(','))+'"></label><label>GALERIA DE MÍDIA<select id="productGallery"><option value="">Sem foto</option>'+gallery.map((x,i)=>'<option value="'+i+'">Mídia '+(i+1)+'</option>').join('')+'</select></label><label>OU ENVIAR FOTO DO COMPUTADOR<input id="photoFile" type="file" accept="image/*"></label><label>DESCRIÇÃO<textarea name="description">'+htm(p.description)+'</textarea></label><label><input type="checkbox" name="featured" '+(p.featured?'checked':'')+'> Vincular a “O seu próximo look favorito”</label><button class="pill-button dark">SALVAR</button></form>');
+ openModal('<h2 id="modalTitle">'+(id?'EDITAR PEÇA':'NOVA PEÇA')+'</h2><form id="productForm" class="modal-form"><label>NOME<input name="name" required value="'+htm(p.name)+'"></label><label>CATEGORIA<input name="category" required value="'+htm(p.category)+'"></label><label>PREÇO DE VENDA<input name="price" type="number" min="0" step=".01" required value="'+htm(p.price)+'"></label><label>CUSTO DE AQUISIÇÃO (PARA MARGEM)<input name="cost" type="number" min="0" step=".01" value="'+htm(p.cost??'')+'"></label><label>DESCONTO INDIVIDUAL (%)<input name="discount" type="number" min="0" max="99" value="'+htm(p.discount||0)+'"></label><label>ESTOQUE<input name="stock" type="number" min="0" value="'+htm(p.stock)+'"></label><label>TAMANHOS<input name="sizes" value="'+htm((p.sizes||[]).join(','))+'"></label><label>GALERIA DE MÍDIA<select id="productGallery"><option value="">Sem foto</option>'+gallery.map((x,i)=>'<option value="'+i+'">Mídia '+(i+1)+'</option>').join('')+'</select></label><label>OU ENVIAR FOTO DO COMPUTADOR<input id="photoFile" type="file" accept="image/*"></label><label>DESCRIÇÃO<textarea name="description">'+htm(p.description)+'</textarea></label><label><input type="checkbox" name="featured" '+(p.featured?'checked':'')+'> Vincular a “O seu próximo look favorito”</label><button class="pill-button dark">SALVAR</button></form>');
  $('#productGallery').onchange=e=>image=e.target.value===''?'':gallery[+e.target.value];
  $('#photoFile').onchange=e=>{const f=e.target.files[0];if(!f)return;if(f.size>600000)return toast('Imagem limitada a 600 KB na prévia.');const reader=new FileReader();reader.onload=()=>image=reader.result;reader.readAsDataURL(f)};
  $('#productForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target),item={...p,id:id||uid(),name:f.get('name'),category:f.get('category'),price:+f.get('price'),cost:f.get('cost')===''?null:+f.get('cost'),discount:+f.get('discount'),stock:+f.get('stock'),sizes:f.get('sizes').split(',').map(x=>x.trim()),description:f.get('description'),featured:f.get('featured')==='on',imageUrl:image};if(id)products=products.map(x=>String(x.id)===String(id)?item:x);else products.push(item);saveAll();closeModal();renderAdminContent();renderProducts()};
@@ -178,10 +181,18 @@ let analyticsFrom = firstDayOfMonth.toLocaleDateString('sv-SE');
 let analyticsTo = currentDay.toLocaleDateString('sv-SE');
 let categoriesFromFirestore = [];
 let catalogLoaded = false;
-let productUnsubscribe = null, productCostUnsubscribe = null, categoryUnsubscribe = null, orderUnsubscribe = null, customerUnsubscribe = null, messageUnsubscribe = null;
+let productUnsubscribe = null, productCostUnsubscribe = null, categoryUnsubscribe = null, orderUnsubscribe = null, customerUnsubscribe = null, messageUnsubscribe = null, vipUnsubscribe = null, benefitUnsubscribers = [];
 let productCosts = new Map();
 let migratingLegacyProductCosts = false;
 let cloudinaryWorkerUrl = '';
+let adminProductSearch = '';
+let adminVipSearch = '';
+let vipUsers = [];
+let vipInviteUrl = '';
+let appliedCartCoupon = null;
+let vipOfferUnsubscribers = [];
+let adminCouponCache = [];
+let adminCampaignCache = [];
 let savingReservation = false;
 let importingExamples = false;
 products = [];
@@ -190,10 +201,15 @@ customers = [];
 discounts = [];
 
 const safeDate = value => value?.toDate ? value.toDate() : new Date(value || Date.now());
-const productCents = p => Math.round(Number(p.price || 0) * (100 - Math.max(0, Math.min(100, Number(p.discount || 0)))));
+const productCents = p => Math.round(Number(p.price || 0) * (100 - Math.max(0, Math.min(99, Number(p.discount || 0)))));
 const displayTotal = order => order?.status==='Concluído'&&Number.isFinite(Number(order.saleTotalCents))?Number(order.saleTotalCents)/100:Number.isFinite(Number(order.totalCents))?Number(order.totalCents)/100:Number(order.total||0);
 const isCloudinaryUrl = value => typeof value === 'string' && /^https:\/\/res\.cloudinary\.com\/[a-z0-9_-]+\/image\/upload\//i.test(value);
 const isCloudinaryPublicId = value => typeof value === 'string' && /^graca\/products\/[a-z0-9_-]{20,60}$/i.test(value);
+const galleryForProduct = product => {
+  const listed = Array.isArray(product?.imageGallery) ? product.imageGallery : [];
+  const source = listed.length ? listed : [{imageUrl:product?.imageUrl,imagePublicId:product?.imagePublicId}];
+  return source.filter(image=>isCloudinaryUrl(image?.imageUrl)&&isCloudinaryPublicId(image?.imagePublicId)).slice(0,5);
+};
 const cloudinaryDeliveryUrl = (value,width=900) => {
   if (!isCloudinaryUrl(value)) return '';
   const marker='/image/upload/',index=value.indexOf(marker);
@@ -217,6 +233,16 @@ const friendlyFirestoreError = error => {
   if (error?.code === 'auth/operation-not-allowed') return 'Ative o provedor Anônimo em Firebase Authentication → Sign-in method.';
   return error?.message || 'Não foi possível salvar. Tente novamente.';
 };
+
+async function postPublicForm(path,payload) {
+  let user=auth.currentUser;
+  if(!user)user=(await signInAnonymously(auth)).user;
+  const token=await user.getIdToken();
+  const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},body:JSON.stringify(payload)});
+  const result=await response.json().catch(()=>({}));
+  if(!response.ok)throw new Error(result.error||'Não foi possível enviar. Tente novamente.');
+  return result;
+}
 
 function updateCatalogSubscriptions() {
   productUnsubscribe?.();
@@ -269,9 +295,10 @@ async function migrateLegacyProductCosts(snapshot) {
       await runTransaction(db, async transaction => {
         const [currentProduct, currentCost] = await Promise.all([transaction.get(productRef), transaction.get(costRef)]);
         if (!currentProduct.exists() || !Object.prototype.hasOwnProperty.call(currentProduct.data(), 'cost')) return;
-        if (!currentCost.exists()) {
-          const value = currentProduct.data().cost;
-          transaction.set(costRef, { cost: value == null ? null : Number(value), updatedAt: serverTimestamp() });
+        const value = currentProduct.data().cost;
+        const legacyValue = value == null ? null : Number(value);
+        if (!currentCost.exists() || currentCost.data().cost !== legacyValue) {
+          transaction.set(costRef, { cost: legacyValue, updatedAt: serverTimestamp() });
         }
         transaction.update(productRef, { cost: deleteField(), updatedAt: serverTimestamp() });
         migrated++;
@@ -290,9 +317,12 @@ function subscribeUserData(user) {
   orderUnsubscribe?.();
   customerUnsubscribe?.();
   messageUnsubscribe?.();
+  vipUnsubscribe?.();
+  stopBenefitsSubscriptions();
   orders = [];
   customers = [];
   messages = [];
+  vipUsers = [];
   if (!user) return;
   const orderQuery = isAdmin
     ? query(collection(db, 'orders'), orderBy('createdAt','desc'), limit(250))
@@ -310,6 +340,10 @@ function subscribeUserData(user) {
       messages = snapshot.docs.map(item => ({ ...item.data(), id: item.id })).sort((a,b) => safeDate(b.createdAt)-safeDate(a.createdAt));
       if ($('#adminContent') && adminTab === 'messages') renderAdminContent();
     }, error => console.error('Falha ao sincronizar mensagens de contato:', error));
+    vipUnsubscribe = onSnapshot(query(collection(db, 'vipUsers'), limit(1000)), snapshot => {
+      vipUsers = snapshot.docs.map(item => ({ ...item.data(), id: item.id }));
+      if ($('#adminContent') && adminTab === 'customers') renderAdminContent();
+    }, error => console.error('Falha ao sincronizar clientes VIP:', error));
   }
 }
 
@@ -318,7 +352,9 @@ profileFor = function(user) {
   const saved = customers.find(c => c.uid === user.uid) || {};
   const label = user.displayName || saved.name || (user.email ? user.email.split('@')[0] : 'Visitante');
   return { ...saved, id:user.uid, uid:user.uid, name:label, email:user.email || '', phone:saved.phone || '',
-    vip:Boolean(!user.isAnonymous && user.emailVerified), emailVerified:Boolean(user.emailVerified), isAnonymous:Boolean(user.isAnonymous),
+    // A verified email is not itself a VIP entitlement. Membership is granted
+    // separately by the admin panel and read from vipUsers/{uid}.
+    vip:false, emailVerified:Boolean(user.emailVerified), isAnonymous:Boolean(user.isAnonymous),
     marketingConsent:Boolean(saved.marketingConsent), address:saved.address || {}, created:saved.createdAt || new Date() };
 };
 
@@ -334,6 +370,27 @@ saveCustomerProfile = async function(profile) {
   if (!existing.exists()) data.createdAt = serverTimestamp();
   await setDoc(ref, data, { merge:true });
 };
+
+async function getVipMembership(user) {
+  if(!user?.uid||user.isAnonymous||!user.emailVerified||!user.email)return null;
+  const snapshot=await getDoc(doc(db,'vipUsers',user.uid));
+  return snapshot.exists()?snapshot.data():null;
+}
+
+async function refreshVipAccessNotice(user) {
+  const notice=$('#vipAccessNotice');if(!notice)return;
+  notice.hidden=true;
+  if(!user?.emailVerified||user.isAnonymous)return;
+  try{
+    const member=await getDoc(doc(db,'vipUsers',user.uid));
+    if(!member.exists()||member.data().status!=='active')return;
+    const setting=await getDoc(doc(db,'settings','vip'));
+    const link=setting.exists()?String(setting.data().inviteUrl||''):'';
+    vipInviteUrl=link;
+    notice.hidden=false;
+    notice.innerHTML=`<strong>Seu acesso ao grupo GRAÇA VIP está liberado.</strong><p>Benefícios: cupons publicados, campanhas e novidades exclusivas da comunidade.</p>${link?`<a class="mini-button" href="${htm(link)}" target="_blank" rel="noopener">ENTRAR NO GRUPO VIP ↗</a>`:'<span>O convite está sendo preparado pela equipe.</span>'}`;
+  }catch(error){console.warn('O aviso de acesso VIP ainda não está disponível:',error);}
+}
 
 renderProducts = function() {
   const term = ($('#searchInput')?.value || '').trim().toLowerCase();
@@ -359,9 +416,10 @@ openProduct = function(id) {
   const p = products.find(item => String(item.id) === String(id) && item.active !== false);
   if (!p) return toast('Este produto não está disponível.');
   selectedSize = p.sizes?.[0] || 'Único';
-  const photo=cloudinaryDeliveryUrl(p.imageUrl,1000);
-  openModal(`<div class="product-detail"><div class="detail-art ${htm(p.color||'pink')}">${photo?`<img class="detail-photo" src="${htm(photo)}" alt="${htm(p.name)}">`:htm(p.mark||'GRAÇA')}</div><div><div class="section-kicker">GRAÇA / PEÇA</div><h2 id="modalTitle">${htm(p.name)}</h2><strong>${money(productCents(p)/100)}</strong><p>${htm(p.description||'')}</p><p class="fine-print">ESTOQUE INFORMADO: ${Number(p.stock||0)} UNIDADES · DISPONIBILIDADE SERÁ CONFIRMADA PELA LOJA</p><label class="fine-print" for="sizeChoice">ESCOLHA UMA VARIAÇÃO</label><div class="size-options" id="sizeChoice">${(p.sizes?.length?p.sizes:['Único']).map(size=>`<button type="button" data-size="${htm(size)}" class="${size===selectedSize?'selected':''}">${htm(size)}</button>`).join('')}</div><button class="pill-button dark" id="detailAdd" ${Number(p.stock||0)<1?'disabled':''}>ADICIONAR AO CARRINHO ↗</button></div></div>`);
+  const gallery=galleryForProduct(p),photo=cloudinaryDeliveryUrl(gallery[0]?.imageUrl||p.imageUrl,1000);
+  openModal(`<div class="product-detail"><div><div class="detail-art ${htm(p.color||'pink')}" id="detailMainPhoto">${photo?`<img class="detail-photo" src="${htm(photo)}" alt="${htm(p.name)}">`:htm(p.mark||'GRAÇA')}</div>${gallery.length>1?`<div class="product-gallery-thumbs">${gallery.map((image,index)=>`<button type="button" data-gallery-index="${index}" aria-label="Ver foto ${index+1} de ${htm(p.name)}"><img src="${htm(cloudinaryDeliveryUrl(image.imageUrl,150))}" alt=""></button>`).join('')}</div>`:''}</div><div><div class="section-kicker">GRAÇA / PEÇA</div><h2 id="modalTitle">${htm(p.name)}</h2><strong>${money(productCents(p)/100)}</strong><p>${htm(p.description||'')}</p><p class="fine-print">ESTOQUE INFORMADO: ${Number(p.stock||0)} UNIDADES · DISPONIBILIDADE SERÁ CONFIRMADA PELA LOJA</p><label class="fine-print" for="sizeChoice">ESCOLHA UMA VARIAÇÃO</label><div class="size-options" id="sizeChoice">${(p.sizes?.length?p.sizes:['Único']).map(size=>`<button type="button" data-size="${htm(size)}" class="${size===selectedSize?'selected':''}">${htm(size)}</button>`).join('')}</div><button class="pill-button dark" id="detailAdd" ${Number(p.stock||0)<1?'disabled':''}>ADICIONAR AO CARRINHO ↗</button></div></div>`);
   $$('[data-size]').forEach(button => button.onclick = () => { selectedSize=button.dataset.size; $$('[data-size]').forEach(item=>item.classList.toggle('selected',item===button)); });
+  $$('[data-gallery-index]').forEach(button=>button.onclick=()=>{const image=gallery[Number(button.dataset.galleryIndex)];const source=cloudinaryDeliveryUrl(image?.imageUrl,1000);if(!source)return;$('#detailMainPhoto').innerHTML=`<img class="detail-photo" src="${htm(source)}" alt="${htm(p.name)}">`;$$('[data-gallery-index]').forEach(item=>item.classList.toggle('active',item===button));});
   $('#detailAdd').onclick = () => { addToCart(p.id,selectedSize); closeModal(); openCart(); };
 };
 
@@ -373,6 +431,30 @@ addToCart = function(id,size) {
   set('cart',cart); renderCart(); toast('Peça adicionada ao carrinho.');
 };
 
+async function applyCartCoupon(code) {
+  const normalized=String(code||'').trim().toUpperCase();
+  if(!normalized){cartCoupon='';appliedCartCoupon=null;set('cartCoupon','');renderCart();toast('Cupom removido.');return false;}
+  if(!/^[A-Z0-9_-]{3,30}$/.test(normalized)){appliedCartCoupon=null;return toast('Confira o código do cupom.'),false;}
+  try{
+    const membership=await getVipMembership(auth.currentUser);
+    if(membership?.status!=='active'){appliedCartCoupon=null;renderCart();return toast('Os cupons publicados estão disponíveis para membros VIP ativos. Entre na sua conta VIP e tente novamente.'),false;}
+    const snapshot=await getDoc(doc(db,'coupons',normalized));
+    if(!snapshot.exists()){appliedCartCoupon=null;return toast('Cupom não encontrado ou não publicado.'),false;}
+    const coupon=snapshot.data(),maxUses=coupon.maxUses==null?null:Number(coupon.maxUses);
+    if(coupon.status!=='published'||!Number.isInteger(Number(coupon.value))||Number(coupon.value)<1||Number(coupon.value)>99||(maxUses!==null&&Number(coupon.uses||0)+Number(coupon.reservedUses||0)>=maxUses)){
+      appliedCartCoupon=null;return toast('Cupom não está disponível no momento.'),false;
+    }
+    cartCoupon=normalized;appliedCartCoupon={code:normalized,value:Number(coupon.value)};set('cartCoupon',normalized);renderCart();toast(`Cupom ${normalized} aplicado.`);return true;
+  }catch(error){console.warn('Cupom não pôde ser validado:',error);appliedCartCoupon=null;return toast('Não foi possível validar o cupom agora. Tente novamente.'),false;}
+}
+
+function cartTotals() {
+  const subtotalCents=cart.reduce((sum,item)=>{const product=products.find(candidate=>String(candidate.id)===String(item.id));return sum+(product?productCents(product)*Number(item.qty||0):0);},0);
+  const coupon=appliedCartCoupon?.code===cartCoupon?appliedCartCoupon:null;
+  const discountCents=coupon?Math.round(subtotalCents*coupon.value/100):0;
+  return {subtotalCents,discountCents,totalCents:subtotalCents-discountCents,coupon};
+}
+
 renderCart = function() {
   $('#cartCount').textContent = cart.reduce((sum,item)=>sum+Number(item.qty||0),0);
   $('#cartItems').innerHTML = cart.length ? cart.map((item,index) => {
@@ -380,21 +462,23 @@ renderCart = function() {
     return `<div class="cart-line"><div class="cart-thumb">${cloudinaryDeliveryUrl(p?.imageUrl,180)?`<img src="${htm(cloudinaryDeliveryUrl(p.imageUrl,180))}" alt="" loading="lazy">`:htm(p?.mark||'✳')}</div><div><h4>${htm(p?.name||'Produto indisponível')}</h4><small>${htm(item.size)} · ${p?money(productCents(p)/100):'Atualize a coleção'}</small><div class="qty-controls"><button data-q="${index}" data-delta="-1" aria-label="Diminuir quantidade">−</button>${Number(item.qty)}<button data-q="${index}" data-delta="1" aria-label="Aumentar quantidade">+</button></div></div><button data-rm="${index}" aria-label="Remover item">×</button></div>`;
   }).join('') : '<div class="empty-state">SEU CARRINHO ESTÁ VAZIO.</div>';
   const validCart = cart.every(item=>products.some(p=>String(p.id)===String(item.id)&&p.active!==false));
-  const total = cart.reduce((sum,item)=>{const p=products.find(product=>String(product.id)===String(item.id));return sum+(p?productCents(p)*Number(item.qty||0):0);},0);
-  $('#cartSummary').innerHTML = cart.length ? `<div class="total"><span>VALOR ESTIMADO</span><strong>${money(total/100)}</strong></div><p class="fine-print">A solicitação não é uma venda nem confirma a reserva. A disponibilidade será verificada pela equipe.</p><button id="checkoutBtn" class="pill-button dark" ${validCart?'':'disabled'}>SOLICITAR RESERVA ↗</button>` : '';
+  const totals=cartTotals();
+  $('#cartSummary').innerHTML = cart.length ? `<form id="couponForm" class="coupon-form"><label for="couponInput">CUPOM DE DESCONTO VIP</label><div><input id="couponInput" name="coupon" maxlength="30" value="${htm(cartCoupon)}" placeholder="Ex.: GRACA10" autocomplete="off"><button id="applyCoupon" class="mini-button" type="submit">APLICAR</button></div><small id="couponStatus" class="${totals.coupon?'coupon-ok':''}" aria-live="polite">${totals.coupon?`${htm(totals.coupon.code)} aplicado: ${totals.coupon.value}% de desconto.`:cartCoupon?'Confirme o código para aplicar o desconto.':'Códigos publicados para membros VIP ativos.'}</small></form><div class="total"><span>SUBTOTAL</span><strong>${money(totals.subtotalCents/100)}</strong></div>${totals.discountCents?`<div class="total"><span>DESCONTO ${htm(totals.coupon?.code||'')}</span><strong>−${money(totals.discountCents/100)}</strong></div>`:''}<div class="total"><span>VALOR ESTIMADO</span><strong>${money(totals.totalCents/100)}</strong></div><p class="fine-print">A solicitação não é uma venda nem confirma a reserva. A disponibilidade será verificada pela equipe.</p><button id="checkoutBtn" class="pill-button dark" ${validCart?'':'disabled'}>SOLICITAR RESERVA ↗</button>` : '';
   $$('[data-q]').forEach(button=>button.onclick=()=>{const index=Number(button.dataset.q);const qty=Number(cart[index].qty)+Number(button.dataset.delta);if(qty<1)cart.splice(index,1);else cart[index].qty=qty;set('cart',cart);renderCart();});
   $$('[data-rm]').forEach(button=>button.onclick=()=>{cart.splice(Number(button.dataset.rm),1);set('cart',cart);renderCart();});
+  $('#couponForm')?.addEventListener('submit',event=>{event.preventDefault();void applyCartCoupon(new FormData(event.currentTarget).get('coupon'));});
   $('#checkoutBtn')?.addEventListener('click',checkout);
 };
 
 function checkout() {}
 checkout = function() {
   if (!cart.length || savingReservation) return;
+  if(cartCoupon&&appliedCartCoupon?.code!==cartCoupon){void applyCartCoupon(cartCoupon);toast('Confirme o cupom antes de enviar a solicitação.');return;}
   const basket = cart.map(item=>({ ...item }));
   const preview = basket.map(item=>{const p=products.find(product=>String(product.id)===String(item.id));return `<li>${htm(p?.name||'Produto')} · ${htm(item.size)} · ${Number(item.qty)} un. · ${p?money(productCents(p)*Number(item.qty)/100):'indisponível'}</li>`;}).join('');
-  const total = basket.reduce((sum,item)=>{const p=products.find(product=>String(product.id)===String(item.id));return sum+(p?productCents(p)*Number(item.qty):0);},0);
+  const totals=cartTotals();
   closeCart();
-  openModal(`<div class="section-kicker">RESERVA / PEDIDO</div><h2 id="modalTitle">SOLICITAR RESERVA.</h2><p>Você pode continuar como visitante. Informe seu nome e WhatsApp para a GRAÇA confirmar disponibilidade e combinar os próximos passos.</p><div class="reservation-summary"><strong>RESUMO</strong><ul>${preview}</ul><div class="total"><span>VALOR ESTIMADO</span><strong>${money(total/100)}</strong></div></div><form id="reservationForm" class="modal-form"><label>SEU NOME<input name="customerName" autocomplete="name" maxlength="120" required></label><label>WHATSAPP<input name="phone" type="tel" autocomplete="tel" maxlength="40" placeholder="(63) 9 0000-0000" required></label><label>COMO PREFERE RECEBER?<select name="deliveryMethod" id="deliveryMethod"><option value="Retirada">Retirada</option><option value="Entrega">Entrega</option></select></label><div id="deliveryAddress" class="address-fields" hidden><strong>ENDEREÇO DE ENTREGA</strong><label>CEP<input name="zip" autocomplete="postal-code" maxlength="12"></label><div class="modal-grid"><label>RUA<input name="street" autocomplete="address-line1" maxlength="120"></label><label>NÚMERO<input name="number" maxlength="20"></label></div><label>BAIRRO<input name="district" maxlength="80"></label><div class="modal-grid"><label>CIDADE<input name="city" maxlength="80"></label><label>ESTADO<input name="state" maxlength="2"></label></div></div><label>DETALHE PARA RETIRADA (OPCIONAL)<input name="pickupDetails" maxlength="160" placeholder="Ex.: horário preferido"></label><label>OBSERVAÇÃO (OPCIONAL)<textarea name="notes" rows="3" maxlength="500"></textarea></label><label class="consent-row"><input name="marketingConsent" type="checkbox"> Quero receber novidades e ofertas. Opcional; não é necessário para processar a reserva.</label><p class="fine-print">Nome e WhatsApp serão usados para analisar esta solicitação e falar sobre a reserva. A loja ainda precisa confirmar a disponibilidade. Nenhum pagamento será solicitado nesta etapa.</p><button class="pill-button dark" id="submitReservation">ENVIAR SOLICITAÇÃO ↗</button></form>`);
+  openModal(`<div class="section-kicker">RESERVA / PEDIDO</div><h2 id="modalTitle">SOLICITAR RESERVA.</h2><p>Você pode continuar como visitante. Informe seu nome e WhatsApp para a GRAÇA confirmar disponibilidade e combinar os próximos passos.</p><div class="reservation-summary"><strong>RESUMO</strong><ul>${preview}</ul><div class="total"><span>SUBTOTAL</span><strong>${money(totals.subtotalCents/100)}</strong></div>${totals.discountCents?`<div class="total"><span>DESCONTO (${htm(totals.coupon.code)})</span><strong>−${money(totals.discountCents/100)}</strong></div>`:''}<div class="total"><span>VALOR ESTIMADO</span><strong>${money(totals.totalCents/100)}</strong></div></div><form id="reservationForm" class="modal-form"><label>SEU NOME<input name="customerName" autocomplete="name" maxlength="120" required></label><label>WHATSAPP<input name="phone" type="tel" autocomplete="tel" maxlength="40" placeholder="(63) 9 0000-0000" required></label><label>COMO PREFERE RECEBER?<select name="deliveryMethod" id="deliveryMethod"><option value="Retirada">Retirada</option><option value="Entrega">Entrega</option></select></label><div id="deliveryAddress" class="address-fields" hidden><strong>ENDEREÇO DE ENTREGA</strong><label>CEP<input name="zip" autocomplete="postal-code" maxlength="12"></label><div class="modal-grid"><label>RUA<input name="street" autocomplete="address-line1" maxlength="120"></label><label>NÚMERO<input name="number" maxlength="20"></label></div><label>BAIRRO<input name="district" maxlength="80"></label><div class="modal-grid"><label>CIDADE<input name="city" maxlength="80"></label><label>ESTADO<input name="state" maxlength="2"></label></div></div><label>DETALHE PARA RETIRADA (OPCIONAL)<input name="pickupDetails" maxlength="160" placeholder="Ex.: horário preferido"></label><label>OBSERVAÇÃO (OPCIONAL)<textarea name="notes" rows="3" maxlength="500"></textarea></label><label class="consent-row"><input name="marketingConsent" type="checkbox"> Quero receber novidades e ofertas. Opcional; não é necessário para processar a reserva.</label><p class="fine-print">Nome e WhatsApp serão usados para analisar esta solicitação e falar sobre a reserva. A loja ainda precisa confirmar a disponibilidade. Nenhum pagamento será solicitado nesta etapa.</p><button class="pill-button dark" id="submitReservation">ENVIAR SOLICITAÇÃO ↗</button></form>`);
   const method=$('#deliveryMethod'), address=$('#deliveryAddress');
   const toggleAddress=()=>{const delivery=method.value==='Entrega';address.hidden=!delivery;for(const name of ['zip','street','number','district','city','state'])address.querySelector(`[name="${name}"]`).required=delivery;};
   method.onchange=toggleAddress; toggleAddress();
@@ -402,7 +486,7 @@ checkout = function() {
     event.preventDefault();
     if (savingReservation) return;
     if (basket.length>6) return toast('Divida a solicitação em até seis combinações de produto e variação.');
-    const form=new FormData(event.currentTarget), name=String(form.get('customerName')).trim(), phone=String(form.get('phone')).trim();
+    const formElement=event.currentTarget,form=new FormData(formElement), name=String(form.get('customerName')).trim(), phone=String(form.get('phone')).trim();
     if (!name || !phone) return toast('Preencha seu nome e WhatsApp.');
     let items;
     try {
@@ -420,32 +504,17 @@ checkout = function() {
     try {
       let user=auth.currentUser;
       if(!user)user=(await signInAnonymously(auth)).user;
-      const cartFingerprint=JSON.stringify(items.map(item=>[item.productId,item.size,item.quantity,item.unitPriceCents]));
+      const cartFingerprint=JSON.stringify(items.map(item=>[item.productId,item.size,item.quantity]));
       const savedDraft=get('pendingReservation',null);
       let orderId=savedDraft?.fingerprint===cartFingerprint&&savedDraft?.uid===user.uid?savedDraft.orderId:'';
       if(!orderId){orderId=doc(collection(db,'orders')).id;set('pendingReservation',{fingerprint:cartFingerprint,uid:user.uid,orderId});}
-      const reference=doc(db,'orders',orderId);
-      const confirmationCode=`GRA-${orderId.toUpperCase()}`;
-      const totalCents=items.reduce((sum,item)=>sum+item.unitPriceCents*item.quantity,0);
-      const order={uid:user.uid,confirmationCode,customerName:name,phone,items,totalCents,deliveryMethod,address:addressData,
-        pickupDetails:String(form.get('pickupDetails')||'').trim().slice(0,160),notes:String(form.get('notes')||'').trim().slice(0,500),
-        marketingConsent:form.get('marketingConsent')==='on',status:'Aguardando confirmação',statusHistory:['Aguardando confirmação'],
-        stockApplied:false,stockRestored:false,createdAt:serverTimestamp(),updatedAt:serverTimestamp()};
-      const existing=await getDoc(reference);
-      let savedOrder=order;
-      if(existing.exists()){
-        savedOrder=existing.data();
-        const savedFingerprint=JSON.stringify((savedOrder.items||[]).map(item=>[item.productId,item.size,item.quantity,item.unitPriceCents]));
-        if(savedOrder.uid!==user.uid||savedOrder.confirmationCode!==confirmationCode||savedFingerprint!==cartFingerprint)throw new Error('Não foi possível confirmar esta solicitação. Mantenha o carrinho e tente novamente.');
-      }else{
-        const limitRef=doc(db,'reservationLimits',user.uid),limitSnapshot=await getDoc(limitRef);
-        if(limitSnapshot.exists()&&Date.now()-safeDate(limitSnapshot.data().lastSubmittedAt).getTime()<30000)throw new Error('Aguarde 30 segundos antes de enviar outra solicitação.');
-        const batch=writeBatch(db);batch.set(reference,order);batch.set(limitRef,{uid:user.uid,lastSubmittedAt:serverTimestamp()});await batch.commit();
-      }
+      const savedOrder=await postPublicForm('/api/public/reservation',{clientOrderId:orderId,customerName:name,phone,items:items.map(item=>({productId:item.productId,size:item.size,quantity:item.quantity})),couponCode:appliedCartCoupon?.code===cartCoupon?cartCoupon:'',deliveryMethod,address:addressData,pickupDetails:String(form.get('pickupDetails')||'').trim().slice(0,160),notes:String(form.get('notes')||'').trim().slice(0,500),marketingConsent:form.get('marketingConsent')==='on'});
+      if(!savedOrder?.orderId||!savedOrder?.confirmationCode)throw new Error('A solicitação não retornou uma confirmação válida. Tente novamente.');
       cart=[];cartCoupon='';set('cart',cart);set('cartCoupon','');renderCart();
+      appliedCartCoupon=null;
       localStorage.removeItem('graca_pendingReservation');
       closeModal();
-      openModal(`<div class="section-kicker">SOLICITAÇÃO REGISTRADA</div><h2 id="modalTitle">RECEBEMOS SEU PEDIDO.</h2><div class="confirmation-code">${htm(confirmationCode)}</div><p>O status é <strong>${htm(savedOrder.status||'Aguardando confirmação')}</strong>. A equipe da GRAÇA vai verificar o estoque e conversar com você pelo WhatsApp.</p><p>${items.map(item=>`${htm(item.name)} · ${htm(item.size)} · ${item.quantity} un.`).join('<br>')}</p><p>Valor estimado: <strong>${money(totalCents/100)}</strong><br>Modalidade: <strong>${htm(deliveryMethod)}</strong></p><p class="fine-print">Esta solicitação não é uma compra concluída nem uma reserva confirmada automaticamente. Nenhum pagamento foi cobrado.</p><button class="pill-button dark" id="reservationDone">VOLTAR À LOJA</button>`);
+      openModal(`<div class="section-kicker">SOLICITAÇÃO REGISTRADA</div><h2 id="modalTitle">RECEBEMOS SEU PEDIDO.</h2><div class="confirmation-code">${htm(savedOrder.confirmationCode)}</div><p>O status é <strong>${htm(savedOrder.status||'Aguardando confirmação')}</strong>. A equipe da GRAÇA vai verificar o estoque e conversar com você pelo WhatsApp.</p><p>${items.map(item=>`${htm(item.name)} · ${htm(item.size)} · ${item.quantity} un.`).join('<br>')}</p><p>Valor estimado: <strong>${money(Number(savedOrder.totalCents||totals.totalCents)/100)}</strong><br>Modalidade: <strong>${htm(deliveryMethod)}</strong></p><p class="fine-print">Esta solicitação não é uma compra concluída nem uma reserva confirmada automaticamente. Nenhum pagamento foi cobrado.</p><button class="pill-button dark" id="reservationDone">VOLTAR À LOJA</button>`);
       $('#reservationDone').onclick=closeModal;
     } catch(error) {
       console.error('Falha ao enviar solicitação de reserva:',error);
@@ -471,17 +540,25 @@ clientMenu = function() {
 vipPage = async function() {
   const user=auth.currentUser;
   if(!user||user.isAnonymous||!user.emailVerified)return accountModal('login','A área VIP exige uma conta com e-mail confirmado. O cadastro é opcional para reservar.');
-  openModal('<div class="section-kicker">COMUNIDADE VIP</div><h2 id="modalTitle">BENEFÍCIOS DA GRAÇA.</h2><p>Cupons, promoções e campanhas aparecem aqui quando a equipe os publica. Você não será inscrito em mensagens promocionais sem consentimento.</p><div id="vipOffers" class="vip-offers"><div class="empty-state">CARREGANDO BENEFÍCIOS…</div></div>');
-  const box=$('#vipOffers');
+  openModal('<div class="section-kicker">COMUNIDADE VIP</div><h2 id="modalTitle">BENEFÍCIOS DA GRAÇA.</h2><div id="vipMembershipState" class="vip-access-notice">CONFERINDO SEU ACESSO…</div><div id="vipOffers" class="vip-offers"><div class="empty-state">CARREGANDO BENEFÍCIOS…</div></div>');
   try {
-    const [couponSnapshot,campaignSnapshot]=await Promise.all([
-      getDocs(query(collection(db,'coupons'),where('status','==','published'),limit(50))),
-      getDocs(query(collection(db,'campaigns'),where('status','==','published'),limit(50)))
-    ]);
-    const offers=[...couponSnapshot.docs.map(d=>({id:d.id,...d.data(),kind:'Cupom'})),...campaignSnapshot.docs.map(d=>({id:d.id,...d.data(),kind:'Campanha'}))];
+    const member=await getVipMembership(user);
     if(!$('#vipOffers'))return;
-    box.innerHTML=offers.length?offers.map(offer=>`<article class="vip-offer"><span class="section-kicker">${htm(offer.kind)}</span><h3>${htm(offer.title||offer.code||'Benefício GRAÇA')}</h3><p>${htm(offer.description|| (offer.value?`${offer.value}% de desconto. Confira as condições com a equipe.`:''))}</p>${offer.code?`<strong class="offer-code">${htm(offer.code)}</strong>`:''}</article>`).join(''):'<div class="empty-state">AINDA NÃO HÁ BENEFÍCIOS PUBLICADOS.</div>';
-  } catch(error) {console.error(error);if(box)box.innerHTML='<div class="empty-state">NÃO FOI POSSÍVEL CARREGAR A ÁREA VIP.</div>';}
+    if(member?.status!=='active'){$('#vipMembershipState').innerHTML='<strong>Seu acesso à Comunidade VIP está pausado.</strong><p>Fale com a equipe da GRAÇA para conferir o cadastro.</p>';$('#vipOffers').innerHTML='';return;}
+    const setting=await getDoc(doc(db,'settings','vip')).catch(()=>null);
+    vipInviteUrl=setting?.exists()?String(setting.data().inviteUrl||''):'';
+    $('#vipMembershipState').innerHTML=`<strong>Seu acesso ao grupo GRAÇA VIP está liberado.</strong><p>Benefícios: cupons publicados, campanhas e novidades exclusivas.</p>${vipInviteUrl?`<a class="pill-button dark" href="${htm(vipInviteUrl)}" target="_blank" rel="noopener">ENTRAR NO GRUPO VIP ↗</a>`:'<span>A equipe ainda precisa configurar o link do grupo.</span>'}`;
+    const renderOffers=()=>{
+      const box=$('#vipOffers');if(!box)return;
+      const offers=[...vipCouponData.map(offer=>({...offer,kind:'Cupom'})),...vipCampaignData.map(offer=>({...offer,kind:'Campanha'}))];
+      box.innerHTML=offers.length?offers.map(offer=>`<article class="vip-offer"><span class="section-kicker">${htm(offer.kind)}</span><h3>${htm(offer.title||offer.code||'Benefício GRAÇA')}</h3><p>${htm(offer.description||(offer.value?`${offer.value}% de desconto. Confira as condições com a equipe.`:''))}</p>${offer.code?`<strong class="offer-code">${htm(offer.code)}</strong>`:''}</article>`).join(''):'<div class="empty-state">AINDA NÃO HÁ BENEFÍCIOS PUBLICADOS.</div>';
+    };
+    let vipCouponData=[],vipCampaignData=[];
+    vipOfferUnsubscribers=[
+      onSnapshot(query(collection(db,'coupons'),where('status','==','published'),limit(50)),snapshot=>{vipCouponData=snapshot.docs.map(d=>({id:d.id,...d.data()}));renderOffers();},error=>{console.error(error);renderOffers();}),
+      onSnapshot(query(collection(db,'campaigns'),where('status','==','published'),limit(50)),snapshot=>{vipCampaignData=snapshot.docs.map(d=>({id:d.id,...d.data()}));renderOffers();},error=>{console.error(error);renderOffers();})
+    ];
+  } catch(error) {console.error(error);const state=$('#vipMembershipState');if(state)state.innerHTML='<strong>Não foi possível confirmar o acesso VIP.</strong><p>Tente novamente em alguns instantes.</p>';const box=$('#vipOffers');if(box)box.innerHTML='';}
 };
 
 function whatsappLink(order) {
@@ -570,7 +647,7 @@ async function changeReservationStatus(orderId,nextStatus) {
       }
       productSnapshots.forEach((snapshot,index)=>transaction.update(productRefs[index],{stock:Number(snapshot.data().stock)-grouped.get(productRefs[index].id),updatedAt:serverTimestamp()}));
     }
-    if(willCancel)productSnapshots.forEach((snapshot,index)=>{if(!snapshot.exists())throw new Error('Produto da reserva não foi encontrado; estoque não alterado.');transaction.update(productRefs[index],{stock:Number(snapshot.data().stock)+grouped.get(productRefs[index].id),updatedAt:serverTimestamp()});});
+    if(willCancel)productSnapshots.forEach((snapshot,index)=>{if(snapshot.exists())transaction.update(productRefs[index],{stock:Number(snapshot.data().stock)+grouped.get(productRefs[index].id),updatedAt:serverTimestamp()});});
       const updated={status:nextStatus,statusHistory:[...(order.statusHistory||[order.status]),nextStatus],updatedAt:serverTimestamp()};
     if(willConfirm){updated.stockApplied=true;updated.confirmedAt=serverTimestamp();}
     if(willCancel){updated.stockApplied=false;updated.stockRestored=true;updated.cancelledAt=serverTimestamp();}
@@ -580,12 +657,17 @@ async function changeReservationStatus(orderId,nextStatus) {
 
 function renderAdminProducts() {
   const transferableLegacyProducts=migrationCandidates.filter(product=>isCloudinaryUrl(product.imageUrl)&&isCloudinaryPublicId(product.imagePublicId));
-  const rows=products.map(product=>`<tr><td>${cloudinaryDeliveryUrl(product.imageUrl,180)?`<img class="admin-product-photo" src="${htm(cloudinaryDeliveryUrl(product.imageUrl,180))}" alt="${htm(product.name)}" loading="lazy">`:''}${htm(product.name)}</td><td>${htm(product.category||'')}</td><td>${money(productCents(product)/100)}</td><td>${Number(product.stock||0)}</td><td>${product.seededExample?'EXEMPLO · REVISAR':product.active===false?'RASCUNHO':'ATIVO'}</td><td><button class="mini-button" data-product-edit="${htm(product.id)}">EDITAR</button></td></tr>`).join('');
-  $('#adminContent').innerHTML=`<div class="section-kicker">CATÁLOGO / FIRESTORE</div><h2>PRODUTOS</h2><div class="admin-toolbar"><span>${products.length} produtos no Firestore</span><div><button id="cloudinarySetup" class="mini-button">CONFIGURAR UPLOAD</button> <button id="newProduct" class="mini-button primary">+ NOVO PRODUTO</button></div></div><p class="fine-print">Cada produto precisa de uma foto segura enviada ao Cloudinary. Os dados e as imagens de exemplo são rascunhos; revise o estoque e os preços antes de publicar. Produtos e pedidos não podem ser apagados pelo painel.</p><div class="admin-toolbar"><button id="importExampleProducts" class="mini-button">IMPORTAR 6 RASCUNHOS COM FOTOS DO CLOUDINARY</button></div>${transferableLegacyProducts.length?'<button id="importLegacyProducts" class="mini-button">IMPORTAR CATÁLOGO DESTE NAVEGADOR</button>':''}${rows?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>PRODUTO</th><th>CATEGORIA</th><th>PREÇO</th><th>ESTOQUE</th><th>STATUS</th><th>AÇÃO</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty-state">NENHUM PRODUTO CADASTRADO NO FIRESTORE.</div>'}<div id="cloudinaryEndpointStatus" class="fine-print"></div>`;
+  const filtered=products.filter(product=>`${product.name||''} ${product.category||''}`.toLowerCase().includes(adminProductSearch.trim().toLowerCase()));
+  const rows=filtered.map(product=>`<tr><td>${cloudinaryDeliveryUrl(product.imageUrl,180)?`<img class="admin-product-photo" src="${htm(cloudinaryDeliveryUrl(product.imageUrl,180))}" alt="${htm(product.name)}" loading="lazy">`:''}${htm(product.name)}</td><td>${htm(product.category||'')}</td><td>${money(productCents(product)/100)}</td><td>${Number(product.stock||0)}</td><td>${product.seededExample?'EXEMPLO · REVISAR':product.active===false?'DESATIVADO':'ATIVO'}</td><td><div class="admin-actions"><button class="mini-button" data-product-edit="${htm(product.id)}">EDITAR</button><button class="mini-button" data-product-active="${htm(product.id)}">${product.active===false?'PUBLICAR':'DESATIVAR'}</button><button class="mini-button danger" data-product-delete="${htm(product.id)}">EXCLUIR</button></div></td></tr>`).join('');
+  const listing=rows?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>PRODUTO</th><th>CATEGORIA</th><th>PREÇO</th><th>ESTOQUE</th><th>STATUS</th><th>AÇÃO</th></tr></thead><tbody>${rows}</tbody></table></div>`:`<div class="empty-state">${products.length?'NENHUM PRODUTO CORRESPONDE À BUSCA.':'NENHUM PRODUTO CADASTRADO NO FIRESTORE.'}</div>`;
+  $('#adminContent').innerHTML=`<div class="section-kicker">CATÁLOGO / FIRESTORE</div><h2>PRODUTOS</h2><div class="admin-toolbar"><span>${products.length} produtos no Firestore</span><div><button id="cloudinarySetup" class="mini-button">CONFIGURAR UPLOAD</button> <button id="newProduct" class="mini-button primary">+ NOVO PRODUTO</button></div></div><p class="fine-print">As fotos são salvas no Cloudinary. Produtos de exemplo ficam ocultos até serem revisados. Excluir remove apenas o produto e o custo privado; registros de pedidos permanecem preservados.</p><div class="admin-filter-bar"><label>BUSCAR POR NOME OU CATEGORIA<input id="adminProductSearch" type="search" value="${htm(adminProductSearch)}" placeholder="Ex.: Jaqueta, Blazer..."></label></div><div class="admin-toolbar"><button id="importExampleProducts" class="mini-button">IMPORTAR ${exampleProductTemplates.length} RASCUNHOS COM FOTOS</button></div>${transferableLegacyProducts.length?'<button id="importLegacyProducts" class="mini-button">IMPORTAR CATÁLOGO DESTE NAVEGADOR</button>':''}${listing}<div id="cloudinaryEndpointStatus" class="fine-print"></div>`;
   $('#newProduct').onclick=()=>productEditor();
   $('#cloudinarySetup').onclick=configureCloudinaryWorker;
   $('#importExampleProducts').onclick=()=>importExampleProducts();
   $$('[data-product-edit]').forEach(button=>button.onclick=()=>productEditor(button.dataset.productEdit));
+  $('#adminProductSearch').oninput=event=>{adminProductSearch=event.target.value;renderAdminProducts();const input=$('#adminProductSearch');input?.focus();input?.setSelectionRange(adminProductSearch.length,adminProductSearch.length);};
+  $$('[data-product-active]').forEach(button=>button.onclick=()=>toggleProductActive(button.dataset.productActive));
+  $$('[data-product-delete]').forEach(button=>button.onclick=()=>deleteProduct(button.dataset.productDelete));
   $('#importLegacyProducts')?.addEventListener('click',async()=>{
     const names=transferableLegacyProducts.map(product=>product.name).join('\n');
     if(!confirm(`Importar ${transferableLegacyProducts.length} produto(s) com foto já enviada ao Cloudinary?\n\n${names}\n\nOs produtos serão criados como rascunhos ocultos. Itens já existentes com o mesmo ID não serão substituídos.`))return;
@@ -594,13 +676,35 @@ function renderAdminProducts() {
   });
 }
 
-async function uploadProductPhoto(file) {
+async function toggleProductActive(id) {
+  if(!isAdmin)return toast('Somente a equipe autorizada pode alterar o catálogo.');
+  const product=products.find(item=>String(item.id)===String(id));if(!product)return;
+  try{await updateDoc(doc(db,'products',String(id)),{active:product.active===false,updatedAt:serverTimestamp()});toast(product.active===false?'Produto publicado no catálogo.':'Produto desativado sem apagar os dados.');}
+  catch(error){console.error(error);toast(friendlyFirestoreError(error));}
+}
+
+async function deleteProduct(id) {
+  if(!isAdmin)return toast('Somente a equipe autorizada pode remover produtos.');
+  const product=products.find(item=>String(item.id)===String(id));if(!product)return;
+  if(!confirm(`Excluir permanentemente “${product.name}” do catálogo e do custo privado? O histórico dos pedidos permanece preservado.`))return;
+  try{const batch=writeBatch(db);batch.delete(doc(db,'products',String(id)));batch.delete(doc(db,'productCosts',String(id)));await batch.commit();toast('Produto removido. O histórico dos pedidos continua guardado.');}
+  catch(error){console.error(error);toast(friendlyFirestoreError(error));}
+}
+
+async function uploadProductPhoto(source) {
   if(!isAdmin||!auth.currentUser?.emailVerified)throw new Error('Entre em uma conta de administrador com e-mail confirmado.');
   if(!cloudinaryWorkerUrl){const setting=await getDoc(doc(db,'settings','cloudinary'));cloudinaryWorkerUrl=setting.exists()?setting.data().workerUrl||'':'';}
   if(!cloudinaryWorkerUrl)throw new Error('Configure primeiro o endereço do Worker de upload.');
-  if(!(file instanceof File)||!['image/jpeg','image/png','image/webp'].includes(file.type)||file.size<1||file.size>5*1024*1024)throw new Error('Use uma foto JPEG, PNG ou WebP de até 5 MB.');
+  const body=new FormData();
+  if(source instanceof File){
+    if(!['image/jpeg','image/png','image/webp'].includes(source.type)||source.size<1||source.size>5*1024*1024)throw new Error('Use uma foto JPEG, PNG ou WebP de até 5 MB.');
+    body.append('file',source);
+  }else if(typeof source==='string'){
+    let url;try{url=new URL(source.trim());}catch{throw new Error('Cole um endereço direto de imagem HTTPS válido.');}
+    if(url.protocol!=='https:'||url.username||url.password||(url.port&&url.port!=='443')||!url.hostname.includes('.')||/(localhost|\.local|\.internal)$/i.test(url.hostname)||/^\d{1,3}(?:\.\d{1,3}){3}$/.test(url.hostname))throw new Error('Use um link HTTPS público, sem senha, porta especial ou endereço local.');
+    body.append('sourceUrl',url.href);
+  }else throw new Error('Escolha um arquivo ou informe um endereço HTTPS de imagem.');
   const token=await auth.currentUser.getIdToken();
-  const body=new FormData();body.append('file',file);
   const response=await fetch(cloudinaryWorkerUrl,{method:'POST',headers:{Authorization:`Bearer ${token}`},body});
   let result={};try{result=await response.json();}catch{}
   if(!response.ok)throw new Error(result.error||'O Worker recusou o envio.');
@@ -630,7 +734,8 @@ async function importExampleProducts() {
       const product={
         name:item.name,category:item.category,price:priceCents/100,discount:0,stock,
         sizes:item.sizes,active:false,featured:false,description:item.description,
-        imageUrl:image.imageUrl,imagePublicId:image.imagePublicId,color:item.color,mark:item.mark,
+        imageUrl:image.imageUrl,imagePublicId:image.imagePublicId,
+        imageGallery:(item.imageGallery?.length?item.imageGallery:[image]).slice(0,5),color:item.color,mark:item.mark,
         seededExample:true,createdAt:serverTimestamp(),updatedAt:serverTimestamp()
       };
       const ref=doc(db,'products',item.id);
@@ -647,9 +752,54 @@ async function importExampleProducts() {
 }
 
 function renderAdminMessages() {
-  const rows=messages.map(message=>`<tr><td>${safeDate(message.createdAt).toLocaleString('pt-BR')}</td><td>${htm(message.name)}</td><td><a href="mailto:${htm(message.email)}">${htm(message.email)}</a></td><td>${htm(message.subject)}</td><td>${htm(message.message)}</td><td><select data-message-status="${htm(message.id)}"><option ${message.status==='Nova'?'selected':''}>Nova</option><option ${message.status==='Em atendimento'?'selected':''}>Em atendimento</option><option ${message.status==='Concluída'?'selected':''}>Concluída</option></select></td></tr>`).join('');
-  $('#adminContent').innerHTML=`<div class="section-kicker">ATENDIMENTO / FIRESTORE</div><h2>MENSAGENS DE CONTATO</h2>${rows?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>DATA</th><th>NOME</th><th>E-MAIL</th><th>ASSUNTO</th><th>MENSAGEM</th><th>STATUS</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty-state">NENHUMA MENSAGEM RECEBIDA.</div>'}`;
+  const rows=messages.map(message=>`<tr><td>${safeDate(message.createdAt).toLocaleString('pt-BR')}</td><td>${htm(message.name)}</td><td><a href="mailto:${htm(message.email)}">${htm(message.email)}</a></td><td>${htm(message.phone||'—')}</td><td>${messageWhatsappLink(message)}</td><td>${htm(message.subject)}</td><td>${htm(message.message)}</td><td><select data-message-status="${htm(message.id)}"><option ${message.status==='Nova'?'selected':''}>Nova</option><option ${message.status==='Em atendimento'?'selected':''}>Em atendimento</option><option ${message.status==='Concluída'?'selected':''}>Concluída</option></select></td></tr>`).join('');
+  $('#adminContent').innerHTML=`<div class="section-kicker">ATENDIMENTO / TEMPO REAL</div><h2>MENSAGENS DE CONTATO</h2>${rows?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>DATA</th><th>NOME</th><th>E-MAIL</th><th>WHATSAPP</th><th>AÇÃO</th><th>ASSUNTO</th><th>MENSAGEM</th><th>STATUS</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty-state">NENHUMA MENSAGEM RECEBIDA.</div>'}`;
   $$('[data-message-status]').forEach(select=>select.onchange=async()=>{const message=messages.find(item=>item.id===select.dataset.messageStatus);if(!message)return;select.disabled=true;try{await updateDoc(doc(db,'messages',message.id),{status:select.value,updatedAt:serverTimestamp()});}catch(error){toast(friendlyFirestoreError(error));select.disabled=false;}});
+}
+
+function messageWhatsappLink(message) {
+  let number=String(message.phone||'').replace(/\D/g,'');if(number&&!number.startsWith('55'))number='55'+number;
+  if(number.length<10||number.length>13)return '<span class="fine-print">SEM NÚMERO</span>';
+  const text=`Olá, ${String(message.name||'').trim()||'tudo bem'}? Aqui é a equipe GRAÇA. Recebemos sua mensagem sobre “${String(message.subject||'atendimento').slice(0,80)}”. Como podemos ajudar?`;
+  return `<a class="mini-button" href="https://wa.me/${number}?text=${encodeURIComponent(text)}" target="_blank" rel="noopener noreferrer" aria-label="Conversar com ${htm(message.name)} pelo WhatsApp">WHATSAPP ↗</a>`;
+}
+
+function renderAdminCustomers() {
+  const needle=adminVipSearch.trim().toLowerCase();
+  const filteredVip=vipUsers.filter(member=>`${member.name||''} ${member.email||''} ${member.phone||''}`.toLowerCase().includes(needle));
+  const vipRows=filteredVip.map(member=>`<tr><td>${htm(member.name)}</td><td>${htm(member.email)}</td><td>${htm(member.phone||'—')}</td><td>${member.status==='active'?'ATIVO':member.status==='blocked'?'BLOQUEADO':'REMOVIDO'}</td><td>${safeDate(member.createdAt).toLocaleDateString('pt-BR')}</td><td><div class="admin-actions"><button class="mini-button" data-vip-status="${htm(member.uid)}" data-next-status="${member.status==='blocked'?'active':'blocked'}">${member.status==='blocked'?'REATIVAR':'BLOQUEAR'}</button><button class="mini-button danger" data-vip-status="${htm(member.uid)}" data-next-status="removed">REMOVER VIP</button></div></td></tr>`).join('');
+  const customerRows=customers.map(customer=>[htm(customer.name),htm(customer.email),htm(customer.phone),customer.marketingConsent?'ACEITOU':'NÃO ACEITOU',safeDate(customer.createdAt).toLocaleDateString('pt-BR')]);
+  $('#adminContent').innerHTML=`<div class="section-kicker">CLIENTES / COMUNIDADE VIP</div><h2>CLIENTES E MEMBROS VIP</h2><p>O acesso VIP é separado do cadastro de cliente. Bloquear ou remover o vínculo VIP mantém a conta e o histórico do cliente.</p><div class="admin-toolbar"><span>${customers.length} contas · ${vipUsers.filter(member=>member.status==='active').length} membros VIP ativos</span><div><button id="vipInviteSetup" class="mini-button">CONFIGURAR LINK DO GRUPO</button> <button id="newVipMember" class="mini-button primary">+ CADASTRAR VIP</button></div></div><section class="finance-panel"><h3>MEMBROS VIP</h3><div class="admin-filter-bar"><label>BUSCAR NOME, E-MAIL OU TELEFONE<input id="adminVipSearch" type="search" value="${htm(adminVipSearch)}" placeholder="Digite para filtrar"></label></div>${filteredVip.length?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>NOME</th><th>E-MAIL</th><th>WHATSAPP</th><th>ACESSO</th><th>CADASTRO</th><th>AÇÕES</th></tr></thead><tbody>${vipRows}</tbody></table></div>`:'<div class="empty-state">NENHUM MEMBRO VIP CORRESPONDE À BUSCA.</div>'}</section><section class="finance-panel"><h3>CONTAS CADASTRADAS</h3>${customerRows.length?table(['NOME','E-MAIL','WHATSAPP','OFERTAS','CADASTRO'],customerRows):'<div class="empty-state">NENHUMA CONTA CADASTRADA. RESERVAS DE VISITANTES FICAM NA ABA PEDIDOS.</div>'}</section>`;
+  $('#adminVipSearch').oninput=event=>{adminVipSearch=event.target.value;renderAdminCustomers();const input=$('#adminVipSearch');input?.focus();input?.setSelectionRange(adminVipSearch.length,adminVipSearch.length);};
+  $('#vipInviteSetup').onclick=configureVipInvite;
+  $('#newVipMember').onclick=manualVipEditor;
+  $$('[data-vip-status]').forEach(button=>button.onclick=()=>updateVipMemberStatus(button.dataset.vipStatus,button.dataset.nextStatus));
+}
+
+async function configureVipInvite() {
+  const saved=await getDoc(doc(db,'settings','vip')).catch(()=>null);
+  const old=saved?.exists()?saved.data().inviteUrl||'':'';
+  const value=prompt('Cole o link de convite HTTPS do grupo fechado da GRAÇA. Ele só aparece para membros VIP ativos.',old);
+  if(value===null)return;
+  const inviteUrl=value.trim();
+  if(inviteUrl&&!/^https:\/\/chat\.whatsapp\.com\/[A-Za-z0-9]+$/.test(inviteUrl))return toast('Use um link válido https://chat.whatsapp.com/...');
+  try{await setDoc(doc(db,'settings','vip'),{inviteUrl,updatedAt:serverTimestamp()});vipInviteUrl=inviteUrl;toast(inviteUrl?'Link VIP salvo com acesso restrito.':'Link VIP removido.');}
+  catch(error){console.error(error);toast(friendlyFirestoreError(error));}
+}
+
+function manualVipEditor() {
+  const candidates=customers.filter(customer=>customer.uid&&customer.email&&!vipUsers.some(member=>member.uid===customer.uid&&member.status==='active'));
+  if(!candidates.length)return toast('É preciso haver uma conta cadastrada, ainda não ativa na VIP, para fazer a vinculação manual.');
+  openModal(`<div class="section-kicker">COMUNIDADE / ADMIN</div><h2 id="modalTitle">CADASTRAR MEMBRO VIP.</h2><p>A associação é feita a uma conta existente e confirmada. O cadastro de cliente e os pedidos continuam preservados.</p><form id="manualVipForm" class="modal-form"><label>ESCOLHA A CONTA<select name="uid" required>${candidates.map(customer=>`<option value="${htm(customer.uid)}">${htm(customer.name)} · ${htm(customer.email)}</option>`).join('')}</select></label><button class="pill-button dark">ATIVAR MEMBRO VIP ↗</button></form>`);
+  $('#manualVipForm').onsubmit=async event=>{event.preventDefault();const uid=String(new FormData(event.currentTarget).get('uid')),customer=candidates.find(item=>item.uid===uid);if(!customer)return;try{const reference=doc(db,'vipUsers',uid),existing=vipUsers.find(member=>member.uid===uid);if(existing)await updateDoc(reference,{status:'active',updatedAt:serverTimestamp()});else await setDoc(reference,{uid,name:String(customer.name||'').slice(0,120),email:customer.email,phone:String(customer.phone||'').slice(0,40),status:'active',createdAt:serverTimestamp(),updatedAt:serverTimestamp()});closeModal();toast('Acesso VIP ativado.');}catch(error){console.error(error);toast(friendlyFirestoreError(error));}};
+}
+
+async function updateVipMemberStatus(uid,status) {
+  if(!['active','blocked','removed'].includes(status))return;
+  const member=vipUsers.find(item=>item.uid===uid);if(!member)return;
+  if(status==='removed'&&!confirm(`Remover ${member.name} da Comunidade VIP? A conta de cliente e os pedidos não serão apagados.`))return;
+  try{await updateDoc(doc(db,'vipUsers',uid),{status,updatedAt:serverTimestamp()});toast(status==='active'?'Membro VIP reativado.':status==='blocked'?'Acesso VIP bloqueado.':'Vínculo VIP removido; o cliente foi preservado.');}
+  catch(error){console.error(error);toast(friendlyFirestoreError(error));}
 }
 
 async function saveCategory(name) {
@@ -677,7 +827,7 @@ productEditor = async function(id='') {
   let imageUrl=isCloudinaryUrl(p.imageUrl)?p.imageUrl:'', imagePublicId=isCloudinaryPublicId(p.imagePublicId)?p.imagePublicId:'', previewUrl='';
   const setting=await getDoc(doc(db,'settings','cloudinary')).catch(()=>null);
   cloudinaryWorkerUrl=setting?.exists()?setting.data().workerUrl||'':'';
-  openModal(`<div class="section-kicker">CATÁLOGO / ${id?'EDITAR':'NOVO'}</div><h2 id="modalTitle">${id?'EDITAR PRODUTO':'CADASTRAR PRODUTO'}.</h2>${p.seededExample?'<p class="seed-review-note">Este é um exemplo: confirme nome, preço, estoque e variações antes de publicar.</p>':''}<form id="productForm" class="modal-form"><label>NOME<input name="name" maxlength="160" required value="${htm(p.name)}"></label><label>CATEGORIA<input name="category" maxlength="80" required value="${htm(p.category)}"></label><div class="modal-grid"><label>PREÇO<input name="price" type="number" min="0.01" max="100000" step=".01" required value="${htm(p.price)}"></label><label>CUSTO (OPCIONAL)<input name="cost" type="number" min="0" step=".01" value="${htm(privateCost??'')}"></label></div><div class="modal-grid"><label>DESCONTO (%)<input name="discount" type="number" min="0" max="100" value="${htm(p.discount||0)}"></label><label>ESTOQUE<input name="stock" type="number" min="0" max="100000" step="1" required value="${htm(p.stock||0)}"></label></div><label>TAMANHOS / VARIAÇÕES (SEPARADOS POR VÍRGULA)<input name="sizes" required value="${htm((p.sizes||[]).join(', '))}"></label><label>DESCRIÇÃO<textarea name="description" maxlength="1200">${htm(p.description||'')}</textarea></label><label><input name="featured" type="checkbox" ${p.featured?'checked':''}> Exibir na curadoria em destaque</label><label><input name="active" type="checkbox" ${p.active!==false?'checked':''}> Publicado no catálogo</label><div class="upload-preview">${imageUrl?`<img id="productPhotoPreview" src="${htm(imageUrl)}" alt="Prévia da foto">`:'<div id="productPhotoPreview" class="empty-state">SEM FOTO</div>'}</div><label>ESCOLHER FOTO NO CELULAR OU COMPUTADOR<input id="photoFile" type="file" accept="image/jpeg,image/png,image/webp"></label><div class="admin-toolbar"><button id="uploadPhoto" class="mini-button" type="button">ENVIAR FOTO</button><button id="removePhoto" class="mini-button" type="button">REMOVER FOTO</button></div><p class="fine-print">Envio limitado a JPEG, PNG ou WebP até 5 MB. O segredo do Cloudinary fica somente no Worker.</p><button class="pill-button dark" id="saveProduct">SALVAR PRODUTO</button></form>`);
+  openModal(`<div class="section-kicker">CATÁLOGO / ${id?'EDITAR':'NOVO'}</div><h2 id="modalTitle">${id?'EDITAR PRODUTO':'CADASTRAR PRODUTO'}.</h2>${p.seededExample?'<p class="seed-review-note">Este é um exemplo: confirme nome, preço, estoque e variações antes de publicar.</p>':''}<form id="productForm" class="modal-form"><label>NOME<input name="name" maxlength="160" required value="${htm(p.name)}"></label><label>CATEGORIA<input name="category" maxlength="80" required value="${htm(p.category)}"></label><div class="modal-grid"><label>PREÇO<input name="price" type="number" min="0.01" max="100000" step=".01" required value="${htm(p.price)}"></label><label>CUSTO (OPCIONAL)<input name="cost" type="number" min="0" step=".01" value="${htm(privateCost??'')}"></label></div><div class="modal-grid"><label>DESCONTO (%)<input name="discount" type="number" min="0" max="99" value="${htm(p.discount||0)}"></label><label>ESTOQUE<input name="stock" type="number" min="0" max="100000" step="1" required value="${htm(p.stock||0)}"></label></div><label>TAMANHOS / VARIAÇÕES (SEPARADOS POR VÍRGULA)<input name="sizes" required value="${htm((p.sizes||[]).join(', '))}"></label><label>DESCRIÇÃO<textarea name="description" maxlength="1200">${htm(p.description||'')}</textarea></label><label><input name="featured" type="checkbox" ${p.featured?'checked':''}> Exibir na curadoria em destaque</label><label><input name="active" type="checkbox" ${p.active!==false?'checked':''}> Publicado no catálogo</label><div class="upload-preview">${imageUrl?`<img id="productPhotoPreview" src="${htm(imageUrl)}" alt="Prévia da foto">`:'<div id="productPhotoPreview" class="empty-state">SEM FOTO</div>'}</div><label>ESCOLHER FOTO NO CELULAR OU COMPUTADOR<input id="photoFile" type="file" accept="image/jpeg,image/png,image/webp"></label><div class="admin-toolbar"><button id="uploadPhoto" class="mini-button" type="button">ENVIAR FOTO</button><button id="removePhoto" class="mini-button" type="button">REMOVER FOTO</button></div><p class="fine-print">Envio limitado a JPEG, PNG ou WebP até 5 MB. O segredo do Cloudinary fica somente no Worker.</p><button class="pill-button dark" id="saveProduct">SALVAR PRODUTO</button></form>`);
   const fileInput=$('#photoFile'), uploadButton=$('#uploadPhoto'), saveButton=$('#saveProduct');
   fileInput.onchange=()=>{const file=fileInput.files?.[0];if(!file)return;if(!['image/jpeg','image/png','image/webp'].includes(file.type)||file.size>5*1024*1024){fileInput.value='';return toast('Escolha JPEG, PNG ou WebP de até 5 MB.');}if(previewUrl)URL.revokeObjectURL(previewUrl);previewUrl=URL.createObjectURL(file);$('#productPhotoPreview').outerHTML=`<img id="productPhotoPreview" src="${previewUrl}" alt="Prévia da foto selecionada">`;};
   $('#removePhoto').onclick=()=>{imageUrl='';imagePublicId='';if(previewUrl)URL.revokeObjectURL(previewUrl);$('#productPhotoPreview').outerHTML='<div id="productPhotoPreview" class="empty-state">SEM FOTO</div>';fileInput.value='';};
@@ -706,6 +856,79 @@ productEditor = async function(id='') {
   };
 };
 
+// Product editor with a single 5-image gallery. Files and remote image links
+// are both sent through the authenticated Cloudinary Worker before saving.
+productEditor = async function(id='') {
+  const existing=products.find(item=>String(item.id)===String(id));
+  const p=existing||{name:'',category:'',price:'',discount:0,stock:0,sizes:['Único'],color:'pink',mark:'GRAÇA',description:'',featured:false,active:true,imageUrl:'',imagePublicId:''};
+  const savedCost=id?await getDoc(doc(db,'productCosts',String(id))).catch(()=>null):null;
+  const privateCost=savedCost?.exists()?savedCost.data().cost:productCosts.get(String(id))?.cost;
+  let gallery=galleryForProduct(p).map(image=>({imageUrl:image.imageUrl,imagePublicId:image.imagePublicId}));
+  let externalUrls=[''];
+  const setting=await getDoc(doc(db,'settings','cloudinary')).catch(()=>null);
+  cloudinaryWorkerUrl=setting?.exists()?setting.data().workerUrl||'':'';
+  openModal(`<div class="section-kicker">CATÁLOGO / ${id?'EDITAR':'NOVO'}</div><h2 id="modalTitle">${id?'EDITAR PRODUTO':'CADASTRAR PRODUTO'}.</h2>${p.seededExample?'<p class="seed-review-note">Este é um exemplo: confirme nome, preço, estoque e variações antes de publicar.</p>':''}<form id="productForm" class="modal-form"><label>NOME<input name="name" maxlength="160" required value="${htm(p.name)}"></label><label>CATEGORIA<input name="category" maxlength="80" required value="${htm(p.category)}"></label><div class="modal-grid"><label>PREÇO<input name="price" type="number" min="0.01" max="100000" step=".01" required value="${htm(p.price)}"></label><label>CUSTO (OPCIONAL)<input name="cost" type="number" min="0" step=".01" value="${htm(privateCost??'')}"></label></div><div class="modal-grid"><label>DESCONTO (%)<input name="discount" type="number" min="0" max="99" value="${htm(p.discount||0)}"></label><label>ESTOQUE<input name="stock" type="number" min="0" max="100000" step="1" required value="${htm(p.stock||0)}"></label></div><label>TAMANHOS / VARIAÇÕES (SEPARADOS POR VÍRGULA)<input name="sizes" required value="${htm((p.sizes||[]).join(', '))}"></label><label>DESCRIÇÃO<textarea name="description" maxlength="1200">${htm(p.description||'')}</textarea></label><label><input name="featured" type="checkbox" ${p.featured?'checked':''}> Exibir na curadoria em destaque</label><label><input name="active" type="checkbox" ${p.active!==false?'checked':''}> Publicado no catálogo</label><section class="product-gallery-editor"><h3>FOTOS DO PRODUTO · ${gallery.length}/5</h3><div id="productGalleryPreview" class="product-gallery-thumbnails"></div><label>ENVIAR ATÉ 5 ARQUIVOS (JPEG, PNG OU WEBP)<input id="photoFiles" type="file" accept="image/jpeg,image/png,image/webp" multiple></label><button id="uploadProductFiles" class="mini-button" type="button">ENVIAR FOTOS SELECIONADAS</button><div id="externalImageUrlFields"></div><button id="addExternalImageUrl" class="mini-button" type="button">+ ADICIONAR URL DE IMAGEM</button><button id="importExternalImages" class="mini-button" type="button">IMPORTAR URLs PELO CLOUDINARY</button><p class="fine-print">Você pode manter até 5 imagens. Links externos são re-hospedados no Cloudinary; somente a URL segura devolvida pelo serviço será salva. O segredo permanece no Worker.</p></section><button class="pill-button dark" id="saveProduct">SALVAR PRODUTO</button></form>`);
+  const fileInput=$('#photoFiles'), uploadButton=$('#uploadProductFiles'), saveButton=$('#saveProduct');
+  const renderGallery=()=>{
+    const box=$('#productGalleryPreview');if(!box)return;
+    box.innerHTML=gallery.length?gallery.map((image,index)=>`<figure class="product-gallery-thumb"><img src="${htm(cloudinaryDeliveryUrl(image.imageUrl,220))}" alt="Foto ${index+1} do produto"><button type="button" class="mini-button danger" data-remove-gallery-image="${index}" aria-label="Remover foto ${index+1}">REMOVER</button>${index===0?'<figcaption>FOTO PRINCIPAL</figcaption>':''}</figure>`).join(''):'<div class="empty-state">ADICIONE AO MENOS UMA FOTO DO CLOUDINARY.</div>';
+    $('#productGalleryPreview h3')?.remove();
+    $$('[data-remove-gallery-image]').forEach(button=>button.onclick=()=>{gallery.splice(Number(button.dataset.removeGalleryImage),1);renderGallery();renderUrlFields();});
+  };
+  const renderUrlFields=()=>{
+    const box=$('#externalImageUrlFields');if(!box)return;
+    box.innerHTML=externalUrls.map((value,index)=>`<label>URL HTTPS DA IMAGEM ${index+1}<div class="admin-actions"><input type="url" data-external-image-url="${index}" value="${htm(value)}" maxlength="2048" placeholder="https://site.com/imagem.jpg"><button class="mini-button danger" type="button" data-remove-external-url="${index}">REMOVER</button></div></label>`).join('');
+    $$('[data-external-image-url]').forEach(input=>input.oninput=()=>{externalUrls[Number(input.dataset.externalImageUrl)]=input.value;});
+    $$('[data-remove-external-url]').forEach(button=>button.onclick=()=>{externalUrls.splice(Number(button.dataset.removeExternalUrl),1);renderUrlFields();});
+  };
+  renderGallery();renderUrlFields();
+  $('#addExternalImageUrl').onclick=()=>{if(gallery.length+externalUrls.filter(value=>value.trim()).length>=5)return toast('A galeria aceita até 5 imagens.');externalUrls.push('');renderUrlFields();};
+  fileInput.onchange=()=>{
+    const files=[...(fileInput.files||[])];
+    if(files.length>5||gallery.length+files.length>5){fileInput.value='';return toast(`Selecione até ${Math.max(0,5-gallery.length)} foto(s) para esta galeria.`);}
+    const invalid=files.some(file=>!['image/jpeg','image/png','image/webp'].includes(file.type)||file.size<1||file.size>5*1024*1024);
+    if(invalid){fileInput.value='';return toast('Use arquivos JPEG, PNG ou WebP de até 5 MB cada.');}
+  };
+  uploadButton.onclick=async()=>{
+    const files=[...(fileInput.files||[])];if(!files.length)return toast('Escolha uma ou mais fotos primeiro.');
+    if(gallery.length+files.length>5)return toast(`A galeria aceita mais ${Math.max(0,5-gallery.length)} foto(s).`);
+    uploadButton.disabled=true;uploadButton.textContent='ENVIANDO…';let uploadedCount=0;
+    try{
+      for(const file of files){const uploaded=await uploadProductPhoto(file);gallery.push(uploaded);uploadedCount++;renderGallery();}
+      fileInput.value='';toast(`${uploadedCount} foto(s) enviada(s) ao Cloudinary. Salve o produto para gravar a galeria.`);
+    }catch(error){console.error(error);toast(`${uploadedCount?`${uploadedCount} foto(s) enviada(s). `:''}${error.message||'Falha no envio.'}`);}
+    finally{uploadButton.disabled=false;uploadButton.textContent='ENVIAR FOTOS SELECIONADAS';}
+  };
+  $('#importExternalImages').onclick=async()=>{
+    const urls=externalUrls.map(value=>value.trim()).filter(Boolean);if(!urls.length)return toast('Adicione ao menos uma URL de imagem.');
+    if(gallery.length+urls.length>5)return toast(`A galeria aceita mais ${Math.max(0,5-gallery.length)} imagem(ns).`);
+    const button=$('#importExternalImages');button.disabled=true;button.textContent='IMPORTANDO…';let uploadedCount=0;
+    try{
+      for(const url of urls){const uploaded=await uploadProductPhoto(url);gallery.push(uploaded);uploadedCount++;renderGallery();}
+      externalUrls=[''];renderUrlFields();toast(`${uploadedCount} imagem(ns) importada(s) ao Cloudinary. Salve o produto para gravar a galeria.`);
+    }catch(error){console.error(error);toast(`${uploadedCount?`${uploadedCount} imagem(ns) importada(s). `:''}${error.message||'Falha na importação.'}`);}
+    finally{button.disabled=false;button.textContent='IMPORTAR URLs PELO CLOUDINARY';}
+  };
+  $('#productForm').onsubmit=async event=>{
+    event.preventDefault();const form=new FormData(event.currentTarget),name=String(form.get('name')).trim(),category=String(form.get('category')).trim(),price=Number(form.get('price')),stock=Number(form.get('stock')),sizes=[...new Set(String(form.get('sizes')).split(',').map(value=>value.trim()).filter(Boolean))];
+    const discount=Number(form.get('discount')||0),costRaw=form.get('cost'),costValue=costRaw===''?null:Number(costRaw);
+    if(!name||name.length>160||!category||category.length>80||!Number.isFinite(price)||price<=0||price>100000||!Number.isInteger(stock)||stock<0||stock>100000||sizes.length<1||sizes.length>20||!Number.isInteger(discount)||discount<0||discount>99||(costValue!==null&&(!Number.isFinite(costValue)||costValue<0||costValue>100000)))return toast('Confira nome, categoria, preço, custo, desconto, estoque e variações.');
+    if(fileInput.files?.length||externalUrls.some(value=>value.trim()))return toast('Envie as fotos selecionadas e importe cada URL antes de salvar.');
+    if(!gallery.length||gallery.length>5||gallery.some(image=>!isCloudinaryUrl(image.imageUrl)||!isCloudinaryPublicId(image.imagePublicId)))return toast('Envie pelo menos uma foto válida ao Cloudinary antes de salvar.');
+    saveButton.disabled=true;saveButton.textContent='SALVANDO…';
+    try{
+      const ref=id?doc(db,'products',id):doc(collection(db,'products'));
+      const mainImage=gallery[0];
+      const product={name,category,price,discount,stock,sizes,description:String(form.get('description')||'').trim(),featured:form.get('featured')==='on',active:form.get('active')==='on',imageUrl:mainImage.imageUrl,imagePublicId:mainImage.imagePublicId,imageGallery:gallery.map(image=>({imageUrl:image.imageUrl,imagePublicId:image.imagePublicId})),color:p.color||'pink',mark:p.mark||'GRAÇA',updatedAt:serverTimestamp()};
+      await runTransaction(db,async transaction=>{
+        transaction.set(ref,{...product,cost:deleteField()},{merge:true});
+        transaction.set(doc(db,'productCosts',ref.id),{cost:costValue,updatedAt:serverTimestamp()},{merge:true});
+      });
+      await saveCategory(category);closeModal();toast('Produto salvo. As fotos e o custo privado foram registrados em coleções separadas.');
+    }catch(error){console.error(error);toast(friendlyFirestoreError(error));saveButton.disabled=false;saveButton.textContent='SALVAR PRODUTO';}
+  };
+};
+
 function offerEditor(kind) {
   const coupon = kind === 'coupon';
   const title = coupon ? 'NOVO CUPOM' : 'NOVA CAMPANHA';
@@ -718,7 +941,7 @@ function offerEditor(kind) {
     <div class="offer-editor-layout">
       <form id="offerEditorForm" class="modal-form offer-editor-form">
         ${coupon?`<label>CÓDIGO DO CUPOM<input name="code" maxlength="30" pattern="[A-Za-z0-9_-]{3,30}" autocomplete="off" placeholder="Ex.: GRACA10" required><small>Use de 3 a 30 letras, números, hífen ou sublinhado.</small></label>
-          <label>DESCONTO (%)<input name="value" type="number" min="1" max="100" step="1" value="10" required></label>`:
+          <label>DESCONTO (%)<input name="value" type="number" min="1" max="99" step="1" value="10" required></label>`:
           `<label>TÍTULO DA CAMPANHA<input name="title" maxlength="120" placeholder="Ex.: Semana da Comunidade" required></label>
           <label>DESCRIÇÃO E CONDIÇÕES<textarea name="description" rows="5" maxlength="500" placeholder="Explique o período, as peças e as condições da campanha." required></textarea><small>Até 500 caracteres.</small></label>`}
         <label>VISIBILIDADE<select name="status"><option value="draft">Salvar como rascunho</option><option value="published">Publicar agora para clientes VIP</option></select></label>
@@ -758,10 +981,10 @@ function offerEditor(kind) {
     try{
       if(coupon){
         const normalized=String(code.value||'').trim().toUpperCase(), percentage=Number(value.value);
-        if(!/^[A-Z0-9_-]{3,30}$/.test(normalized)||!Number.isInteger(percentage)||percentage<1||percentage>100)throw new Error('Confira o código e o desconto de 1 a 100%.');
+        if(!/^[A-Z0-9_-]{3,30}$/.test(normalized)||!Number.isInteger(percentage)||percentage<1||percentage>99)throw new Error('Confira o código e o desconto de 1 a 99%.');
         const reference=doc(db,'coupons',normalized);
         if((await getDoc(reference)).exists())throw new Error('Já existe um cupom com esse código. Escolha outro.');
-        await setDoc(reference,{code:normalized,value:percentage,status,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
+        await setDoc(reference,{code:normalized,value:percentage,status,uses:0,reservedUses:0,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
       } else {
         const campaignName=String(campaignTitle.value||'').trim(), campaignDescription=String(description.value||'').trim();
         if(!campaignName||campaignName.length>120||campaignDescription.length<1||campaignDescription.length>500)throw new Error('Preencha o título e a descrição (até 500 caracteres).');
@@ -776,20 +999,35 @@ function offerEditor(kind) {
 
 function renderAdminBenefits() {
   $('#adminContent').innerHTML='<div class="section-kicker">COMUNIDADE / PUBLICAÇÕES</div><h2>BENEFÍCIOS VIP</h2><p>Crie benefícios com uma prévia antes de salvar. Só itens publicados aparecem para membros com e-mail confirmado.</p><div class="admin-toolbar"><button id="newVipCoupon" class="mini-button primary">+ NOVO CUPOM</button><button id="newVipCampaign" class="mini-button">+ NOVA CAMPANHA</button></div><section class="offer-list-panel"><h3>CUPONS</h3><div id="adminCoupons" class="empty-state">CARREGANDO…</div></section><section class="offer-list-panel"><h3>CAMPANHAS</h3><div id="adminCampaigns" class="empty-state">CARREGANDO…</div></section>';
-  const load=async()=>{
-    try{
-      const [couponsSnapshot,campaignsSnapshot]=await Promise.all([getDocs(query(collection(db,'coupons'),limit(100))),getDocs(query(collection(db,'campaigns'),limit(100)))]);
-      const coupons=couponsSnapshot.docs.map(d=>({id:d.id,...d.data()})),campaigns=campaignsSnapshot.docs.map(d=>({id:d.id,...d.data()}));
-      if(!$('#adminCoupons'))return;
-      $('#adminCoupons').outerHTML=`<div id="adminCoupons">${coupons.length?table(['CÓDIGO','DESCONTO','STATUS','AÇÃO'],coupons.map(c=>[htm(c.code),`${Number(c.value||0)}%`,c.status==='published'?'PUBLICADO':'RASCUNHO',`<button class="mini-button" data-toggle-coupon="${htm(c.id)}">${c.status==='published'?'DESPUBLICAR':'PUBLICAR'}</button>`])):'<div class="empty-state">NENHUM CUPOM CADASTRADO.</div>'}</div>`;
-      $('#adminCampaigns').outerHTML=`<div id="adminCampaigns">${campaigns.length?table(['CAMPANHA','DESCRIÇÃO','STATUS','AÇÃO'],campaigns.map(c=>[htm(c.title),htm(c.description),c.status==='published'?'PUBLICADA':'RASCUNHO',`<button class="mini-button" data-toggle-campaign="${htm(c.id)}">${c.status==='published'?'DESPUBLICAR':'PUBLICAR'}</button>`])):'<div class="empty-state">NENHUMA CAMPANHA CADASTRADA.</div>'}</div>`;
-      $$('[data-toggle-coupon]').forEach(button=>button.onclick=()=>toggleOffer('coupons',button.dataset.toggleCoupon,coupons));
-      $$('[data-toggle-campaign]').forEach(button=>button.onclick=()=>toggleOffer('campaigns',button.dataset.toggleCampaign,campaigns));
-    }catch(error){console.error(error);$('#adminCoupons').textContent='Não foi possível carregar os cupons.';$('#adminCampaigns').textContent='Não foi possível carregar as campanhas.';}
+  const renderLists=(coupons,campaigns)=>{
+    if(!$('#adminCoupons'))return;
+    $('#adminCoupons').innerHTML=coupons.length?table(['CÓDIGO','DESCONTO','STATUS','AÇÕES'],coupons.map(c=>[htm(c.code),`${Number(c.value||0)}%`,c.status==='published'?'PUBLICADO':'RASCUNHO',`<div class="admin-actions"><button class="mini-button" data-toggle-coupon="${htm(c.id)}">${c.status==='published'?'DESPUBLICAR':'PUBLICAR'}</button><button class="mini-button danger" data-delete-offer="coupons:${htm(c.id)}">EXCLUIR</button></div>`])):'<div class="empty-state">NENHUM CUPOM CADASTRADO.</div>';
+    $('#adminCampaigns').innerHTML=campaigns.length?table(['CAMPANHA','DESCRIÇÃO','STATUS','AÇÕES'],campaigns.map(c=>[htm(c.title),htm(c.description),c.status==='published'?'PUBLICADA':'RASCUNHO',`<div class="admin-actions"><button class="mini-button" data-toggle-campaign="${htm(c.id)}">${c.status==='published'?'DESPUBLICAR':'PUBLICAR'}</button><button class="mini-button danger" data-delete-offer="campaigns:${htm(c.id)}">EXCLUIR</button></div>`])):'<div class="empty-state">NENHUMA CAMPANHA CADASTRADA.</div>';
+    $$('[data-toggle-coupon]').forEach(button=>button.onclick=()=>toggleOffer('coupons',button.dataset.toggleCoupon,coupons));
+    $$('[data-toggle-campaign]').forEach(button=>button.onclick=()=>toggleOffer('campaigns',button.dataset.toggleCampaign,campaigns));
+    $$('[data-delete-offer]').forEach(button=>button.onclick=()=>{const [collectionName,id]=button.dataset.deleteOffer.split(':');void deleteOffer(collectionName,id);});
   };
   $('#newVipCoupon').onclick=()=>offerEditor('coupon');
   $('#newVipCampaign').onclick=()=>offerEditor('campaign');
-  load();
+  renderLists(adminCouponCache,adminCampaignCache);
+  if(benefitUnsubscribers.length)return;
+  benefitUnsubscribers=[
+    onSnapshot(query(collection(db,'coupons'),limit(100)),snapshot=>{adminCouponCache=snapshot.docs.map(d=>({id:d.id,...d.data()}));renderLists(adminCouponCache,adminCampaignCache);},error=>{console.error(error);if($('#adminCoupons'))$('#adminCoupons').textContent='Não foi possível carregar os cupons.';}),
+    onSnapshot(query(collection(db,'campaigns'),limit(100)),snapshot=>{adminCampaignCache=snapshot.docs.map(d=>({id:d.id,...d.data()}));renderLists(adminCouponCache,adminCampaignCache);},error=>{console.error(error);if($('#adminCampaigns'))$('#adminCampaigns').textContent='Não foi possível carregar as campanhas.';})
+  ];
+}
+
+function stopBenefitsSubscriptions() {
+  benefitUnsubscribers.forEach(unsubscribe=>unsubscribe());
+  benefitUnsubscribers=[];
+  adminCouponCache=[];
+  adminCampaignCache=[];
+}
+
+async function deleteOffer(collectionName,id) {
+  if(!['coupons','campaigns'].includes(collectionName)||!confirm('Excluir este benefício do Firestore?'))return;
+  try{await deleteDoc(doc(db,collectionName,id));toast('Benefício excluído; a lista foi atualizada.');}
+  catch(error){console.error(error);toast(friendlyFirestoreError(error));}
 }
 
 async function toggleOffer(collectionName,id,items) {
@@ -866,12 +1104,11 @@ function renderFinanceAnalytics(el) {
 
 renderAdminContent = function() {
   const el=$('#adminContent');if(!el)return;
+  if(adminTab!=='discounts')stopBenefitsSubscriptions();
   if(adminTab==='products')return renderAdminProducts();
   if(adminTab==='orders')return renderAdminOrders();
   if(adminTab==='discounts')return renderAdminBenefits();
-  if(adminTab==='customers'){
-    el.innerHTML=`<div class="section-kicker">CLIENTES / CONSENTIMENTO</div><h2>CONTAS CADASTRADAS</h2>${customers.length?table(['NOME','E-MAIL','WHATSAPP','OFERTAS','CADASTRO'],customers.map(customer=>[htm(customer.name),htm(customer.email),htm(customer.phone),customer.marketingConsent?'ACEITOU':'NÃO ACEITOU',safeDate(customer.createdAt).toLocaleDateString('pt-BR')])):'<div class="empty-state">NENHUMA CONTA CADASTRADA. RESERVAS DE VISITANTES FICAM NA ABA PEDIDOS.</div>'}`;return;
-  }
+  if(adminTab==='customers')return renderAdminCustomers();
   if(adminTab==='messages'){
     return renderAdminMessages();
   }
@@ -880,13 +1117,16 @@ renderAdminContent = function() {
 };
 
 onAuthStateChanged(auth,async user=>{
+  appliedCartCoupon=null;
   if(user?.emailVerified&&!user.isAnonymous){
     try{const saved=await getDoc(doc(db,'customers',user.uid));if(saved.exists())customers=[{...saved.data(),id:user.uid,uid:user.uid}];}catch(error){console.warn('Perfil opcional não carregado:',error);}
     currentUser=profileFor(user);isAdmin=await hasAdminAccess(user);
+    try{const membership=await getVipMembership(user);currentUser.vip=membership?.status==='active';}catch(error){console.warn('O status VIP ainda não está disponível:',error);}
   }
   else if(user?.isAnonymous){currentUser=profileFor(user);isAdmin=false;}
   else {currentUser=null;isAdmin=false;}
-  memberNav();updateCatalogSubscriptions();subscribeUserData(user);
+  memberNav();void refreshVipAccessNotice(user);updateCatalogSubscriptions();subscribeUserData(user);renderCart();
+  if(user?.emailVerified&&!user.isAnonymous&&cartCoupon)void applyCartCoupon(cartCoupon);
 });
 
 $('#accountBtn').onclick=()=>currentUser&&!currentUser.isAnonymous?clientMenu():accountModal('login');
@@ -894,11 +1134,11 @@ $('#clientMenuBtn').onclick=()=>clientMenu();
 $('#vipJoinBtn').onclick=()=>vipForm();
 $('#orderStatusBtn').onclick=()=>trackOrder();
 $('#contactForm').onsubmit=async event=>{
-  event.preventDefault();const form=new FormData(event.currentTarget),name=String(form.get('name')).trim(),email=String(form.get('email')).trim().toLowerCase(),subject=String(form.get('subject')).trim(),message=String(form.get('message')).trim();
+  event.preventDefault();const formElement=event.currentTarget,form=new FormData(formElement),name=String(form.get('name')).trim(),email=String(form.get('email')).trim().toLowerCase(),phone=String(form.get('phone')||'').trim(),subject=String(form.get('subject')).trim(),message=String(form.get('message')).trim(),companyWebsite=String(form.get('companyWebsite')||'');
   if(name.length<1||name.length>120||!email||message.length<8||message.length>1500)return toast('Confira seu nome, e-mail e mensagem.');
-  const button=event.currentTarget.querySelector('button[type="submit"]');button.disabled=true;button.textContent='ENVIANDO…';
-  try{let user=auth.currentUser;if(!user)user=(await signInAnonymously(auth)).user;const limitRef=doc(db,'messageLimits',user.uid),limitSnapshot=await getDoc(limitRef);if(limitSnapshot.exists()&&Date.now()-safeDate(limitSnapshot.data().lastSubmittedAt).getTime()<30000)throw new Error('Aguarde 30 segundos antes de enviar outra mensagem.');const reference=doc(collection(db,'messages')),batch=writeBatch(db);batch.set(reference,{uid:user.uid,name,email,subject:subject.slice(0,100),message,status:'Nova',createdAt:serverTimestamp(),updatedAt:serverTimestamp()});batch.set(limitRef,{uid:user.uid,lastSubmittedAt:serverTimestamp()});await batch.commit();event.currentTarget.reset();toast('Mensagem recebida pela GRAÇA.');}
-  catch(error){console.error(error);toast(friendlyFirestoreError(error));}
+  const button=formElement.querySelector('button[type="submit"]');button.disabled=true;button.textContent='ENVIANDO…';
+  try{await postPublicForm('/api/public/message',{name,email,phone,subject:subject.slice(0,100),message,companyWebsite});formElement.reset();toast('Mensagem recebida pela GRAÇA.');}
+  catch(error){console.error(error);toast(error.message||friendlyFirestoreError(error));}
   finally{button.disabled=false;button.textContent='ENVIAR MENSAGEM ↗';}
 };
 $('#searchInput').addEventListener('input',renderProducts);
@@ -906,4 +1146,3 @@ $('#categoryFilter').addEventListener('change',renderProducts);
 $('#sortFilter').addEventListener('change',renderProducts);
 updateCatalogSubscriptions();
 renderProducts();renderCart();memberNav();
-

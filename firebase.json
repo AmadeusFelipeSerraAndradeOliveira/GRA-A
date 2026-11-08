@@ -40,8 +40,21 @@
           "functionId": "mercadopagoWebhook",
           "region": "southamerica-east1"
         }
+      },
+      {
+        "source": "/api/public/reservation",
+        "function": {
+          "functionId": "publicReservation",
+          "region": "southamerica-east1"
+        }
+      },
+      {
+        "source": "/api/public/message",
+        "function": {
+          "functionId": "publicMessage",
+          "region": "southamerica-east1"
+        }
       }
     ]
   }
 }
-

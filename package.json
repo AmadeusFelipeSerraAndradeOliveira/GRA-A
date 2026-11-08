@@ -4,7 +4,7 @@
     "build": "node scripts/check-build.cjs"
   },
   "dependencies": {
+    "cloudinary": "^2.11.0",
     "firebase": "^13.1.0"
   }
 }
-

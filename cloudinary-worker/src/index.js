@@ -15,6 +15,19 @@ function corsHeaders(origin, env) {
   };
 }
 
+function validateRemoteImageUrl(value) {
+  let url;
+  try { url = new URL(String(value || '').trim()); } catch { throw new Error('Cole um endereço direto de imagem HTTPS válido.'); }
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const ipLiteral = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname) || hostname.includes(':');
+  if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')
+      || !hostname.includes('.') || ipLiteral || /(^|\.)(localhost|local|internal|test)$/i.test(hostname)
+      || /(^|\.)(nip\.io|sslip\.io)$/i.test(hostname) || url.href.length > 2048) {
+    throw new Error('Use um link HTTPS público, sem senha, porta especial ou endereço local.');
+  }
+  return url.href;
+}
+
 function json(data, status, cors = {}) {
   return new Response(JSON.stringify(data), {
     status,
@@ -104,25 +117,35 @@ export default {
 
       const form = await request.formData();
       const file = form.get('file');
-      if (!(file instanceof File)) return json({ error: 'Selecione uma imagem.' }, 400, cors);
-      if (!allowedTypes.has(file.type) || file.size < 1 || file.size > maxImageBytes) {
-        return json({ error: 'Use JPEG, PNG ou WebP com até 5 MB.' }, 400, cors);
+      const remoteValue = form.get('sourceUrl');
+      let uploadSource;
+      if (file instanceof File) {
+        if (!allowedTypes.has(file.type) || file.size < 1 || file.size > maxImageBytes) {
+          return json({ error: 'Use JPEG, PNG ou WebP com até 5 MB.' }, 400, cors);
+        }
+        uploadSource = await validateImageBytes(file);
+      } else if (typeof remoteValue === 'string' && remoteValue.length) {
+        uploadSource = validateRemoteImageUrl(remoteValue);
+      } else {
+        return json({ error: 'Escolha uma foto ou cole um endereço HTTPS de imagem.' }, 400, cors);
       }
       if (!env.CLOUDINARY_CLOUD_NAME || !env.CLOUDINARY_API_KEY || !env.CLOUDINARY_API_SECRET) {
         return json({ error: 'O administrador ainda precisa configurar os segredos do Cloudinary no Worker.' }, 503, cors);
       }
 
-      const safeFile = await validateImageBytes(file);
       const timestamp = Math.floor(Date.now() / 1000).toString();
       const folder = 'graca/products';
       const publicId = crypto.randomUUID();
-      const signature = await sha1Hex(`folder=${folder}&public_id=${publicId}&timestamp=${timestamp}${env.CLOUDINARY_API_SECRET}`);
+      const allowedFormats = 'jpg,png,webp';
+      const signature = await sha1Hex(`allowed_formats=${allowedFormats}&folder=${folder}&public_id=${publicId}&timestamp=${timestamp}${env.CLOUDINARY_API_SECRET}`);
       const upload = new FormData();
-      upload.append('file', safeFile, 'product-image');
+      if (typeof uploadSource === 'string') upload.append('file', uploadSource);
+      else upload.append('file', uploadSource, 'product-image');
       upload.append('api_key', env.CLOUDINARY_API_KEY);
       upload.append('timestamp', timestamp);
       upload.append('folder', folder);
       upload.append('public_id', publicId);
+      upload.append('allowed_formats', allowedFormats);
       upload.append('signature', signature);
       const response = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(env.CLOUDINARY_CLOUD_NAME)}/image/upload`, {
         method: 'POST', body: upload
@@ -140,4 +163,3 @@ export default {
     }
   }
 };
-

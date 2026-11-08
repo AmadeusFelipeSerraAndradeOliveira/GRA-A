@@ -1,95 +1,83 @@
 # GRAÇA | Gente, Moda e Comunidade
 
-Loja editorial de moda com catálogo no Firestore, carrinho, solicitação de reserva como visitante, cadastro opcional da Comunidade VIP e painel administrativo.
+Loja editorial de moda com catálogo Cloudinary/Firestore, solicitação de reserva, área VIP e painel administrativo.
 
-## Modelo desta versão
+## O que o site faz
 
-- A pessoa escolhe produtos, tamanhos e quantidades e envia uma **solicitação**, sem cartão, Pix ou cobrança.
-- Só nome e WhatsApp são obrigatórios. Endereço é pedido apenas para entrega; retirada, observação e consentimento de novidades são opcionais.
-- O código mostrado após o envio começa com `GRA-`. O status inicial é `Aguardando confirmação`; a equipe ainda precisa confirmar estoque e combinar o atendimento.
-- Pedidos pendentes não alteram estoque. A confirmação administrativa relê produtos e estoque em uma transação Firestore. Pedidos confirmados podem ser cancelados, com devolução das unidades na mesma transação. Pedidos e clientes não têm ação de exclusão.
-- Reservas de visitante usam Firebase Anonymous Authentication em segundo plano. Isso não mostra tela de cadastro nem pede senha; é necessário habilitar o provedor Anônimo no Firebase.
-- O cadastro por e-mail é opcional. A área VIP exige conta com e-mail confirmado. Cupons e campanhas aparecem somente depois de publicados no painel. O consentimento de marketing é independente e não vem marcado.
-- Cada produto novo ou alterado exige uma foto enviada ao Cloudinary. Um Cloudflare Worker confirma a conta administrativa e assina o envio; somente a `secure_url` e o ID público retornados são gravados no Firestore. O API Secret nunca entra no navegador. Remover a foto limpa a referência, mas não apaga o arquivo antigo no Cloudinary.
-- A vitrine transforma a URL segura apenas na hora de exibir a imagem, usando `f_auto`, `q_auto` e limite de largura. A URL original retornada por `secure_url` continua sendo a referência salva no Firestore.
-- As seis fotos de produto reconhecidas da pasta enviada foram carregadas na conta Cloudinary conectada. O botão de importação usa as `secure_url` existentes e cria produtos ocultos com preços de exemplo aleatórios e estoque entre 5 e 50; revise os rascunhos antes de publicar.
-- Custos de aquisição são mantidos em `productCosts/{id}`, coleção acessível somente à equipe. Ao abrir o catálogo no painel, o administrador migra os custos antigos para essa coleção e remove esse campo dos documentos públicos dos produtos.
-- Uma solicitação só pode ser encerrada como venda depois de marcada como entregue. O encerramento registra canal, pagamento, valor final e, para crédito parcelado, quantidade e valores exatos das parcelas. Análise Financeira mostra faturamento, ticket médio, vendas por canal/pagamento, produtos mais vendidos e um CSV.
-- Contatos enviados pelo formulário são salvos na coleção privada `messages` para a equipe responder fora da loja. O site não envia mensagens automáticas por WhatsApp.
+- O cliente monta o carrinho, informa nome/WhatsApp e envia uma **solicitação**. A equipe confere estoque e confirma pelo painel; enviar a solicitação não cobra pagamento nem baixa estoque.
+- Pedidos e cadastros de clientes são preservados. Um pedido pode ser cancelado ou ter o status alterado, mas não apagado. O painel permite remover um produto do catálogo, mantendo o histórico registrado nos pedidos.
+- Os formulários de reserva e contato usam Firebase Authentication em segundo plano e enviam ao endpoint de Functions. O servidor limita cada origem IP e cada UID a um envio por 30 segundos; no IPv6, endereços da mesma rede `/64` compartilham o limite. Os identificadores IP são protegidos por HMAC antes de serem salvos. O início de pagamento também aplica o limite por UID e IP, e a consulta de status tem janela independente de cinco segundos.
+- O site valida cupons publicados no carrinho e a função de reserva recalcula preços, estoque e desconto no Firestore antes de gravar. Cupons e campanhas do painel usam listeners em tempo real.
+- Produtos aceitam uma galeria de até cinco imagens. Arquivos JPEG, PNG e WebP de até 5 MB e links públicos HTTPS passam pelo Cloudinary Worker; somente `secure_url` e `public_id` retornados pelo Cloudinary são gravados no produto.
+- A área financeira é separada da Visão Geral. Ela mostra vendas encerradas, ticket médio, canais, formas de pagamento, desempenho dos produtos e exportação CSV. Encerrar uma venda registra canal, forma de pagamento e parcelas quando aplicável.
+- A conta confirmada por e-mail não recebe acesso VIP automaticamente. Um administrador vincula/ativa um membro; o link privado do grupo é acessível somente a membros ativos e à equipe. A ativação prepara um e-mail na coleção `mail` para a extensão Firebase Trigger Email.
+- O painel oferece pesquisa e desativação de produtos, gestão de status VIP, botão de WhatsApp nas mensagens e sincronização das coleções por listeners do Firestore.
 
-## Rodar e validar
+## Fotos de exemplo e identidade da marca
+
+As fotos de produto, o logotipo, o slogan “Gente, Moda e Comunidade” e as artes institucionais da pasta fornecida foram carregados no Cloudinary conectado. `catalog-seed.js` contém **oito produtos de exemplo** com galerias quando há mais de uma foto.
+
+No painel, abra **Produtos → Importar 8 rascunhos com fotos**. A rotina cria rascunhos ocultos com preços de demonstração aleatórios dentro de faixas de varejo e estoque de 5 a 50 unidades. Antes de publicar qualquer peça, revise nome, preço, tamanhos, estoque e imagem. A importação não publica produtos na vitrine automaticamente.
+
+Para uma peça nova, abra **Produtos → Novo Produto**, selecione até cinco arquivos ou adicione URLs HTTPS e use os botões de envio/importação. Confira a galeria e salve. Para remover uma foto da galeria, use **Remover** no editor; isso apaga a referência no produto, mas não destrói o arquivo na conta Cloudinary.
+
+## Executar e verificar localmente
 
 ```powershell
 npm install
 npm run dev
 ```
 
-Abra `http://localhost:5501`. `npm run build` verifica a sintaxe JavaScript, sincroniza os arquivos usados pelo Firebase Hosting na pasta `public/` e confere os fluxos principais. O projeto é HTML/CSS/JavaScript estático, sem etapa de empacotamento.
+Abra `http://localhost:5501`. O servidor local encaminha `/api/...` ao Firebase Hosting para evitar CORS. `npm run build` verifica sintaxe e fluxos principais e sincroniza os arquivos para `public/`, que é a pasta publicada pelo Firebase Hosting.
 
-As alterações de interface podem ser vistas sem login. Para reservar, precisa haver produtos ativos no Firestore e o provedor Anônimo habilitado. Não faça uma solicitação de teste no projeto de produção: ela cria um registro persistente. Use o Emulator Suite ou um projeto Firebase de teste para validar gravações.
+As operações de gravação dependem de Functions já publicadas e da chave `PUBLIC_FORM_RATE_LIMIT_KEY` no Secret Manager do Firebase. A autenticação Anônima e por e-mail/senha deve estar habilitada no Firebase Authentication. Domínios de desenvolvimento e hospedagem devem estar em **Authentication → Settings → Authorized domains**.
 
-## Firebase necessário
+## Publicação das Functions e regras
 
-No projeto `graca-454ff`:
+O projeto Firebase `graca-454ff` precisa estar no plano Blaze para implantar Cloud Functions e usar Secret Manager. Não coloque segredos no repositório, no navegador nem nesta documentação.
 
-1. Em **Authentication → Sign-in method**, habilite **Anonymous** e **Email/Password**. Para clientes VIP e administradores, mantenha a confirmação de e-mail. Em **Settings → Authorized domains**, autorize os domínios de desenvolvimento e hospedagem, sem incluir portas: `localhost`, `127.0.0.1`, `graca-454ff.web.app` e `graca-454ff.firebaseapp.com`.
-2. Cadastre a conta de administrador em **Authentication** e confirme o e-mail. Em Firestore, crie `admins/{UID}` usando o UID exato da conta, ou defina a custom claim `admin: true` pelo SDK Admin. As regras impedem que o próprio site crie ou remova permissões de administrador.
-3. As regras revisadas foram compiladas e publicadas em `graca-454ff` em 07/11/2026. Para alterações futuras, revise e publique com `firebase deploy --only firestore:rules --project graca-454ff`.
-4. Configure o Worker do Cloudinary e envie uma foto para cada produto. O editor valida a `secure_url` e o identificador Cloudinary, e as regras rejeitam imagens de outros domínios. Para publicar, revise nome, categoria, preço, estoque e variações antes de marcar **Publicado no catálogo**.
-5. Nas coleções `products`, `categories`, `customers`, `orders`, `messages`, `admins`, `coupons`, `campaigns` e `settings`, as regras limitam leitura e escrita por função. Clientes podem ler somente seus próprios pedidos; visitantes não consultam pedidos por código público.
+1. Gere uma chave aleatória local de pelo menos 32 bytes e cadastre-a de forma interativa como `PUBLIC_FORM_RATE_LIMIT_KEY` no Firebase Secret Manager. Essa chave assina o hash do IP; o valor nunca é devolvido ao navegador.
+2. Implante primeiro as Functions, incluindo `publicReservation`, `publicMessage`, `settleReservationCoupon` e `queueVipWelcomeEmail`. O início e a consulta dos pagamentos também usam a chave de limite; as rotas Mercado Pago só devem ser implantadas quando `MP_CLIENT_ID`, `MP_CLIENT_SECRET` e `MP_WEBHOOK_SECRET` estiverem configurados.
+3. Só depois de confirmar que os dois endpoints públicos respondem, publique `firestore.rules` e o índice TTL de `submissionRateLimits.expireAt`. As regras atuais negam criação de reserva e mensagem diretamente pelo navegador para impedir que o limite por IP seja contornado.
+4. Execute `npm run build` e publique Hosting. O conteúdo hospedado vem de `public/`.
 
-O gerador `@cloudinary/create-cloudinary-service-worker-lab` não foi adicionado como dependência do site: ele só copia arquivos para iniciar um service worker experimental. A loja já armazena imagens no Cloudinary, então as URLs de entrega otimizadas fazem esse trabalho sem interceptar todas as imagens do navegador.
+Se a conta ainda estiver no plano Spark, não publique as regras novas antes das Functions: os formulários do site atual dependem dessas rotas. Nesse caso, mantenha o site anterior até habilitar faturamento e terminar a implantação encadeada.
 
-O formulário de contato e as reservas salvam no Firestore diretamente com Firebase Auth. Regras verificam os campos, limites, UID, preço atual e total da reserva; cada sessão tem um intervalo mínimo de 30 segundos entre envios do mesmo tipo, imposto por uma gravação em lote e pelas regras. A equipe altera status apenas pelo painel; a confirmação de estoque usa uma transação Firestore para impedir baixa duplicada ou estoque negativo. A integração de pagamentos em Functions, se reativada, lê nome, preço, desconto e disponibilidade na mesma transação que grava a reserva.
+O limite por IP dificulta o bypass com uma nova sessão anônima; ele não impede completamente abuso com VPN, proxy ou troca de rede. App Check com uma chave de site reCAPTCHA válida é uma camada adicional recomendada quando estiver configurada no Console.
 
-**Limite de custo e abuso:** esta implementação não depende de Cloud Functions, Blaze, Firebase Storage nem gateway. Firebase Spark ainda tem limites de leitura, gravação e tráfego. O intervalo de 30 segundos reduz envios repetidos pela mesma sessão, mas uma pessoa pode criar outra sessão anônima; App Check e detecção de spam ainda precisam ser configurados no Console Firebase antes de uma campanha pública.
+## E-mail de boas-vindas VIP
 
-### Cotas públicas consultadas em 06/11/2026
+Quando a equipe muda o status de uma pessoa para **Ativo** e já configurou o link do grupo em **Clientes / VIP → Configurar link do grupo**, a Function adiciona uma mensagem formatada à coleção `mail`. Para o envio real, instale e configure a extensão oficial **Trigger Email from Firestore** com um SMTP e remetente verificado. O código não contém senha de e-mail; sem a extensão e o SMTP configurados, o registro fica apenas na fila e não chega à caixa do cliente. Cabeçalhos sozinhos não garantem entrega nem evitam spam; SPF, DKIM e DMARC dependem do domínio e do provedor de e-mail.
 
-- O Cloud Firestore informa cota gratuita diária de 50 mil leituras, 20 mil gravações e 20 mil exclusões, mais 1 GiB armazenado e 10 GiB/mês de transferência de saída para a base elegível. Listeners em tempo real também consomem leituras quando documentos entram ou mudam no resultado ([cotas e cobrança](https://firebase.google.com/docs/firestore/pricing)).
-- O plano Free do Cloudflare Workers permite até 100 mil requisições por dia e 50 sub-requisições por chamada. O Worker de upload foi mantido pequeno e usa poucas chamadas externas ([limites do Workers](https://developers.cloudflare.com/workers/platform/limits/)).
-- A página atual do Cloudinary lista 25 créditos mensais no plano Free; armazenamento, transformações e tráfego de imagens consomem esses créditos. A disponibilidade e os limites devem ser monitorados no painel da conta ([planos do Cloudinary](https://cloudinary.com/pricing), [medição de uso](https://cloudinary.com/documentation/billing_and_plans)).
+## Upload Cloudinary
 
-Esses limites permitem começar sem ativar Blaze nem contratar um serviço, mas não significam uso ilimitado nem custo zero garantido em qualquer volume. Confirme os limites antes de ampliar o tráfego e monitore o uso nas contas dos fornecedores.
+O Worker está em `cloudinary-worker/`. Para habilitá-lo, use sua conta Cloudflare e os valores do Cloudinary:
 
-## Configurar upload Cloudinary
+1. Configure `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY` e `CLOUDINARY_API_SECRET` como segredos do Worker, sem adicioná-los ao Git.
+2. Publique `cloudinary-worker/wrangler.toml` com Wrangler na sua conta Cloudflare.
+3. No painel administrativo, selecione **Produtos → Configurar upload** e informe o endereço HTTPS `workers.dev/upload` publicado pelo Wrangler.
+4. Faça um envio com uma conta administradora e confirme a prévia na galeria.
 
-O worker está em `cloudinary-worker/`. A implantação depende da conta Cloudflare e das credenciais Cloudinary do proprietário; não há credenciais ou URL inventadas no repositório.
+O Worker verifica o token do Firebase, a autorização administrativa, a origem permitida e o formato dos arquivos. Para URLs, exige endereço público HTTPS sem credenciais, porta especial ou host local; o Cloudinary re-hospeda a imagem e retorna a referência final. O serviço externo pode recusar uma URL ou um formato que não consiga importar.
 
-1. Crie/acesse sua conta Cloudinary e guarde o Cloud name, API Key e API Secret.
-2. Instale o Wrangler pela distribuição oficial e autentique sua conta Cloudflare: `npx wrangler@latest login`.
-3. Grave os três segredos usando os comandos em [cloudinary-worker/README.md](cloudinary-worker/README.md). Não cole os valores no chat, no HTML ou no `wrangler.toml`.
-4. Publique com `npx wrangler@latest deploy --config cloudinary-worker/wrangler.toml`.
-5. No painel da loja, abra **Produtos → Configurar upload** e cole o endereço `https://…workers.dev/upload` retornado pelo Wrangler. O endpoint público não é uma chave secreta.
-6. Faça um envio de teste controlado. O Worker aceita JPEG, PNG e WebP até 5 MB e somente para uma conta administrativa verificada.
+## Dados e limites conhecidos
 
-O Worker limita requisições aos domínios em `ALLOWED_ORIGINS`. Atualize a lista antes de publicar em um domínio diferente. A conta Cloudinary precisa permitir os uploads assinados da aplicação; os limites do plano gratuito podem mudar.
-
-### Orientação para cadastrar fotos e produtos
-
-1. No painel administrativo, abra **Produtos → Configurar upload** e informe a URL `workers.dev` que termina em `/upload`. Essa URL identifica o Worker; ela não é a chave do Cloudinary.
-2. Para um produto individual, escolha a foto no editor, clique em **Enviar foto**, confira a prévia e salve. Só então o Firestore recebe a URL segura e o identificador devolvidos pelo Cloudinary.
-3. Para os exemplos enviados, clique em **Importar 6 rascunhos com fotos do Cloudinary**. As seis URLs seguras e os IDs públicos ficam no manifesto `catalog-seed.js`; artes de campanha e logotipos não entram no estoque.
-4. A importação cria rascunhos invisíveis ao público e inventa preço/estoque de demonstração. Abra cada rascunho, confirme os dados reais, tamanhos e variações, mantenha a foto correta e só depois marque **Publicado no catálogo**.
-5. Para trocar uma foto, envie a imagem nova e salve. O produto passa a apontar para a nova `secure_url`; o arquivo anterior permanece na conta Cloudinary até ser removido pelo proprietário no painel Cloudinary.
-
-## Dados anteriores e integrações pausadas
-
-Produtos que já estavam no Firestore continuam lá e não são apagados. A edição de um produto antigo sem foto Cloudinary exige enviar uma foto antes de salvar. O catálogo salvo neste navegador só pode ser migrado quando seus produtos já têm uma URL Cloudinary válida; a migração os cria como rascunhos. Os pedidos antigos ficam visíveis e os registros não podem ser excluídos pelo painel.
-
-O código das rotas Mercado Pago permanece em `functions/`, mas não foi possível validar nesta rodada que os endpoints estão publicados ou que as credenciais secretas estão configuradas. Pagamentos não foram testados de ponta a ponta; confirme o estado das funções, segredos e webhook no Firebase antes de aceitar pagamentos.
+- `products` e `productCosts` ficam separados para manter custo de aquisição privado. Só administradores verificados escrevem produtos e custos.
+- `vipUsers/{uid}` registra o status da associação VIP; bloquear/remover altera o vínculo sem apagar a conta do cliente.
+- Pedidos e clientes não têm permissão de exclusão nas regras. A exclusão de produto é administrativa, e não remove pedidos históricos.
+- Relatórios financeiros usam as vendas encerradas carregadas no painel, até o limite de 250 pedidos recentes. A margem estimada usa o custo atual do produto, não histórico de custo por venda.
+- O envio do e-mail VIP depende da instalação e credenciais da extensão de e-mail. A integração Mercado Pago continua independente; credenciais, webhook e testes de pagamento precisam ser conferidos antes de cobrar clientes.
 
 ## Arquivos principais
 
-- `index.html`, `style.css`: identidade da marca, vitrine e experiência mobile.
-- `app.js`: catálogo, carrinho, reserva, cadastro VIP, painel, importação de exemplos, encerramento de venda, relatórios e sincronização em tempo real.
-- `catalog-seed.js`: nomes e fotos de peças reconhecidas na pasta fornecida; o manifesto não inclui material editorial.
-- `firestore.rules`: validação de catálogo, URLs Cloudinary, reservas, estoque, encerramento com dados financeiros, mensagens e conteúdo VIP; acesso negado por padrão.
-- `cloudinary-worker/src/index.js`: autenticação Firebase e upload assinado no Cloudinary.
-- `cloudinary-worker/wrangler.toml`: projeto Firebase e origens locais/publicadas permitidas no CORS.
-- `scripts/check-build.cjs`: checagens de sintaxe, fluxos de segurança e ausência do checkout antigo.
+- `index.html`, `style.css`: loja, identidade e layout administrativo.
+- `app.js`: carrinho, cupons, reservas, galeria, VIP, painel, relatórios e atualização em tempo real.
+- `catalog-seed.js`: oito itens de demonstração com fotos Cloudinary.
+- `firestore.rules`, `firestore.indexes.json`: autorização e expiração dos hashes de IP.
+- `functions/index.js`: Mercado Pago, endpoints rate-limited e fila de boas-vindas VIP.
+- `cloudinary-worker/src/index.js`: validação administrativa e upload/re-hospedagem protegidos.
+- `scripts/check-build.cjs`: verificação estática e sincronização da pasta Hosting.
 
-## Validação disponível
+## Validação
 
-`npm run build` é uma verificação estática, não um teste de integração. A validação das regras pelo Firebase Emulator Suite ainda precisa ser feita em uma máquina com Java instalado. Não foram criados pedidos, clientes, produtos ou uploads na base de produção durante a revisão local.
-
+`npm run build` é uma checagem local de sintaxe e conteúdo, não um teste de integração. Os testes do Firebase Emulator Suite e os testes reais de e-mail, upload, webhook e reserva devem ser executados com as respectivas contas/segredos configurados. Não use um pedido de teste no banco de produção sem confirmar que ele pode ficar registrado permanentemente.

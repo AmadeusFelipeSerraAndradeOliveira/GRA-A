@@ -257,4 +257,34 @@
 .offer-list-panel h3{margin:0 0 12px;font:11px var(--mono);letter-spacing:.06em}
 .offer-list-panel .admin-table{box-shadow:4px 4px 0 rgba(17,18,14,.08)}
 @media(max-width:640px){.modal:has(.offer-editor){padding:18px}.offer-editor-banner{padding:20px}.offer-editor-layout{grid-template-columns:1fr;gap:14px}.offer-preview-panel{order:-1}}
-
+.hero{background-image:linear-gradient(90deg,rgba(240,241,230,.93),rgba(240,241,230,.45)),url("https://res.cloudinary.com/imc3dn7g/image/upload/v1794144019/graca/brand/hero-editorial-heart-look.jpg")!important;background-position:center,right center;background-size:cover}
+.wordmark img{display:block;width:94px;height:58px;object-fit:contain;mix-blend-mode:multiply}
+.brand-story{background:#e5e8d8}
+.brand-story-heading{display:grid;grid-template-columns:1fr 1fr;align-items:end;gap:8vw;margin:36px 0 42px}
+.brand-story-heading h2{margin:0;font:900 clamp(48px,7vw,92px)/.84 var(--sans);letter-spacing:-.08em}
+.brand-story-heading h2 em{font-family:var(--serif)}
+.brand-story-heading p{max-width:420px;margin:0;font-size:17px;line-height:1.6}
+.brand-story-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
+.brand-story-card{margin:0;background:var(--paper);border:1px solid var(--ink);padding:10px;display:flex;flex-direction:column}
+.brand-story-card img{display:block;width:100%;aspect-ratio:1;object-fit:contain;background:#fff}
+.brand-story-card figcaption{padding:12px 4px 4px;font:10px var(--mono);line-height:1.5}
+.vip-access-notice{margin:20px auto;padding:18px;border:2px solid var(--ink);background:var(--yellow);max-width:620px;text-align:left;box-shadow:6px 6px 0 var(--ink)}
+.vip-access-notice p{margin:8px 0 13px}
+.vip-access-notice[hidden]{display:none}
+.contact-honeypot{position:absolute!important;left:-10000px!important;width:1px!important;height:1px!important;overflow:hidden!important;opacity:0!important}
+.detail-photo{width:100%;height:100%;object-fit:cover}
+.product-gallery-thumbs{display:flex;gap:8px;overflow:auto;margin-top:10px}
+.product-gallery-thumbs button{width:64px;height:64px;flex:0 0 64px;padding:2px;background:#fff;border:1px solid var(--line);cursor:pointer}
+.product-gallery-thumbs button.active{border:2px solid var(--ink)}
+.product-gallery-thumbs img{width:100%;height:100%;object-fit:cover}
+.admin-actions .danger{border-color:#a12222;color:#a12222}
+@media(max-width:850px){.brand-story-heading{grid-template-columns:1fr;gap:18px}.brand-story-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.wordmark img{width:82px;height:52px}}
+.product-gallery-editor{display:grid;gap:12px;padding:16px;border:1px solid var(--line);border-radius:14px;background:#faf8f5}
+.product-gallery-editor h3{margin:0;font-size:.78rem;letter-spacing:.1em}
+.product-gallery-editor>.product-gallery-thumbnails{display:flex;gap:10px;overflow-x:auto;padding:4px 0}
+.product-gallery-thumb{position:relative;display:grid;gap:5px;flex:0 0 110px;margin:0}
+.product-gallery-thumb img{width:110px;height:120px;object-fit:cover;border-radius:8px;background:#eee}
+.product-gallery-thumb figcaption{font-size:.58rem;letter-spacing:.08em}
+#externalImageUrlFields label{display:grid;gap:6px}
+#externalImageUrlFields .admin-actions{display:flex;gap:8px;align-items:center}
+#externalImageUrlFields input{min-width:0;flex:1}

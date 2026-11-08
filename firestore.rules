@@ -35,15 +35,9 @@ service cloud.firestore {
       );
     }
 
-    function verifiedMember() {
-      return signedIn()
-        && request.auth.token.email_verified == true
-        && request.auth.token.firebase.sign_in_provider != 'anonymous';
-    }
-
     function validProduct(data) {
       return data.keys().hasAll(['name', 'category', 'price', 'stock', 'sizes', 'active', 'imageUrl', 'imagePublicId', 'updatedAt'])
-        && data.keys().hasOnly(['name', 'category', 'price', 'discount', 'stock', 'reservedStock', 'sizes', 'active', 'description', 'featured', 'imageUrl', 'imagePublicId', 'color', 'mark', 'seededExample', 'updatedAt', 'createdAt'])
+        && data.keys().hasOnly(['name', 'category', 'price', 'discount', 'stock', 'reservedStock', 'sizes', 'active', 'description', 'featured', 'imageUrl', 'imagePublicId', 'imageGallery', 'color', 'mark', 'seededExample', 'updatedAt', 'createdAt'])
         && data.name is string && data.name.size() > 0 && data.name.size() <= 160
         && data.category is string && data.category.size() > 0 && data.category.size() <= 80
         && data.price is number && data.price > 0 && data.price <= 100000
@@ -51,13 +45,14 @@ service cloud.firestore {
         && (!('reservedStock' in data) || (data.reservedStock is int && data.reservedStock >= 0 && data.reservedStock <= 100000))
         && data.sizes is list && data.sizes.size() > 0 && data.sizes.size() <= 20
         && data.active is bool
-        && (!('discount' in data) || (data.discount is number && data.discount >= 0 && data.discount <= 100))
+        && (!('discount' in data) || (data.discount is number && data.discount >= 0 && data.discount <= 99))
         && (!('description' in data) || (data.description is string && data.description.size() <= 1200))
         && (!('featured' in data) || data.featured is bool)
         && data.imageUrl is string && data.imageUrl.size() <= 2048
         && data.imageUrl.matches('https://res\\.cloudinary\\.com/[A-Za-z0-9_-]+/image/upload/.*')
         && data.imagePublicId is string && data.imagePublicId.size() <= 255
         && data.imagePublicId.matches('^graca/products/[A-Za-z0-9_-]{20,60}$')
+        && validImageGallery(data)
         && (!('seededExample' in data) || data.seededExample is bool)
         && (!('color' in data) || (data.color is string && data.color.size() <= 40))
         && (!('mark' in data) || (data.mark is string && data.mark.size() <= 80))
@@ -65,11 +60,45 @@ service cloud.firestore {
         && (!('createdAt' in data) || data.createdAt is timestamp);
     }
 
+    function validGalleryImage(image) {
+      return image is map
+        && image.keys().hasAll(['imageUrl', 'imagePublicId'])
+        && image.keys().hasOnly(['imageUrl', 'imagePublicId'])
+        && image.imageUrl is string && image.imageUrl.size() <= 2048
+        && image.imageUrl.matches('https://res\\.cloudinary\\.com/[A-Za-z0-9_-]+/image/upload/.*')
+        && image.imagePublicId is string
+        && image.imagePublicId.matches('^graca/products/[A-Za-z0-9_-]{20,60}$');
+    }
+
+    function validImageGallery(data) {
+      return !('imageGallery' in data)
+        || (data.imageGallery is list && data.imageGallery.size() >= 1 && data.imageGallery.size() <= 5
+          && validGalleryImage(data.imageGallery[0])
+          && data.imageGallery[0].imageUrl == data.imageUrl
+          && data.imageGallery[0].imagePublicId == data.imagePublicId
+          && (data.imageGallery.size() < 2 || validGalleryImage(data.imageGallery[1]))
+          && (data.imageGallery.size() < 3 || validGalleryImage(data.imageGallery[2]))
+          && (data.imageGallery.size() < 4 || validGalleryImage(data.imageGallery[3]))
+          && (data.imageGallery.size() < 5 || validGalleryImage(data.imageGallery[4])));
+    }
+
     function validProductCost(data) {
       return data.keys().hasAll(['cost', 'updatedAt'])
         && data.keys().hasOnly(['cost', 'updatedAt'])
         && (data.cost == null || (data.cost is number && data.cost >= 0 && data.cost <= 100000))
         && data.updatedAt is timestamp;
+    }
+
+    function validLegacyCostMigration(productId) {
+      let costPath = /databases/$(database)/documents/productCosts/$(productId);
+      return isAdmin()
+        && 'cost' in resource.data
+        && !('cost' in request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['cost', 'updatedAt'])
+        && request.resource.data.updatedAt is timestamp
+        && existsAfter(costPath)
+        && getAfter(costPath).data.cost == resource.data.cost
+        && getAfter(costPath).data.updatedAt is timestamp;
     }
 
     function validProfileAddress(address) {
@@ -151,13 +180,23 @@ service cloud.firestore {
     }
 
     function validReservationTotal(data) {
-      return data.totalCents is int && data.totalCents > 0
-        && data.totalCents == data.items[0].unitPriceCents * data.items[0].quantity
+      let subtotal = data.items[0].unitPriceCents * data.items[0].quantity
           + (data.items.size() > 1 ? data.items[1].unitPriceCents * data.items[1].quantity : 0)
           + (data.items.size() > 2 ? data.items[2].unitPriceCents * data.items[2].quantity : 0)
           + (data.items.size() > 3 ? data.items[3].unitPriceCents * data.items[3].quantity : 0)
           + (data.items.size() > 4 ? data.items[4].unitPriceCents * data.items[4].quantity : 0)
           + (data.items.size() > 5 ? data.items[5].unitPriceCents * data.items[5].quantity : 0);
+      return data.totalCents is int && data.totalCents >= 0
+        && ((!('couponCode' in data) && !('couponPercent' in data) && !('subtotalCents' in data) && !('discountCents' in data)
+            && data.totalCents == subtotal && data.totalCents > 0)
+          || (data.couponCode is string && data.couponPercent is int
+            && data.subtotalCents is int && data.subtotalCents == subtotal
+            && data.discountCents is int && data.couponPercent >= 0 && data.couponPercent <= 99
+            && data.discountCents == math.round(data.subtotalCents * data.couponPercent / 100)
+            && data.totalCents == data.subtotalCents - data.discountCents
+            && ((data.couponCode == '' && data.couponPercent == 0)
+              || (data.couponCode is string && data.couponCode.matches('^[A-Z0-9_-]{3,30}$')
+                && data.couponPercent >= 1 && data.couponPercent <= 99))));
     }
 
     function validAddress(data) {
@@ -178,7 +217,7 @@ service cloud.firestore {
     function validReservation(data) {
       return signedIn()
         && data.keys().hasAll(['uid', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'subtotalCents', 'discountCents', 'couponCode', 'couponPercent', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt'])
         && data.uid == request.auth.uid
         && data.confirmationCode is string && data.confirmationCode.size() >= 10 && data.confirmationCode.size() <= 32
         && data.customerName is string && data.customerName.size() > 0 && data.customerName.size() <= 120
@@ -234,13 +273,21 @@ service cloud.firestore {
 
     function validAdminReservation(data) {
       return data.keys().hasAll(['uid', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt', 'confirmedAt', 'cancelledAt', 'salesChannel', 'paymentMethod', 'saleTotalCents', 'installmentCount', 'installmentValueCents', 'finalInstallmentValueCents', 'closedAt'])
+        && data.keys().hasOnly(['uid', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'subtotalCents', 'discountCents', 'couponCode', 'couponPercent', 'couponReserved', 'couponCounted', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt', 'confirmedAt', 'cancelledAt', 'salesChannel', 'paymentMethod', 'saleTotalCents', 'installmentCount', 'installmentValueCents', 'finalInstallmentValueCents', 'closedAt'])
         && data.uid == resource.data.uid
         && data.confirmationCode == resource.data.confirmationCode
         && data.customerName == resource.data.customerName
         && data.phone == resource.data.phone
         && data.items == resource.data.items
         && data.totalCents == resource.data.totalCents
+        && (!('couponCode' in resource.data) || data.couponCode == resource.data.couponCode)
+        && (!('couponPercent' in resource.data) || data.couponPercent == resource.data.couponPercent)
+        && (!('couponReserved' in data) || data.couponReserved is bool)
+        && (!('couponCounted' in data) || data.couponCounted is bool)
+        && (!('couponReserved' in resource.data) || ('couponReserved' in data && data.couponReserved == resource.data.couponReserved))
+        && (!('couponCounted' in resource.data) || ('couponCounted' in data && data.couponCounted == resource.data.couponCounted))
+        && (!('subtotalCents' in resource.data) || data.subtotalCents == resource.data.subtotalCents)
+        && (!('discountCents' in resource.data) || data.discountCents == resource.data.discountCents)
         && data.deliveryMethod == resource.data.deliveryMethod
         && data.address == resource.data.address
         && data.pickupDetails == resource.data.pickupDetails
@@ -276,9 +323,12 @@ service cloud.firestore {
 
     function validCoupon(data) {
       return data.keys().hasAll(['code', 'value', 'status', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['code', 'value', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['code', 'value', 'status', 'maxUses', 'uses', 'reservedUses', 'createdAt', 'updatedAt'])
         && data.code is string && data.code.size() >= 3 && data.code.size() <= 30
-        && data.value is int && data.value >= 1 && data.value <= 100
+        && data.value is int && data.value >= 1 && data.value <= 99
+        && (!('maxUses' in data) || (data.maxUses is int && data.maxUses >= 1 && data.maxUses <= 1000000))
+        && (!('uses' in data) || (data.uses is int && data.uses >= 0 && data.uses <= 1000000))
+        && (!('reservedUses' in data) || (data.reservedUses is int && data.reservedUses >= 0 && data.reservedUses <= 1000000))
         && data.status in ['draft', 'published']
         && data.createdAt is timestamp && data.updatedAt is timestamp;
     }
@@ -292,13 +342,41 @@ service cloud.firestore {
         && data.createdAt is timestamp && data.updatedAt is timestamp;
     }
 
+    function validVipMember(data, uid) {
+      return data.keys().hasAll(['uid', 'name', 'email', 'phone', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'name', 'email', 'phone', 'status', 'createdAt', 'updatedAt'])
+        && data.uid == uid && data.uid is string && data.uid.size() <= 128
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 120
+        && data.email is string && data.email.size() <= 254
+        && data.phone is string && data.phone.size() <= 40
+        && data.status in ['active', 'blocked', 'removed']
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    function isActiveVip() {
+      return signedIn()
+        && request.auth.token.email_verified == true
+        && request.auth.token.firebase.sign_in_provider != 'anonymous'
+        && exists(/databases/$(database)/documents/vipUsers/$(request.auth.uid))
+        && get(/databases/$(database)/documents/vipUsers/$(request.auth.uid)).data.status == 'active';
+    }
+
+    function validVipSetting(data) {
+      return data.keys().hasAll(['inviteUrl', 'updatedAt'])
+        && data.keys().hasOnly(['inviteUrl', 'updatedAt'])
+        && data.inviteUrl is string && data.inviteUrl.size() <= 512
+        && (data.inviteUrl == '' || data.inviteUrl.matches('^https://chat\\.whatsapp\\.com/[A-Za-z0-9]+$'))
+        && data.updatedAt is timestamp;
+    }
+
     function validMessageData(data) {
       return data.keys().hasAll(['uid', 'name', 'email', 'subject', 'message', 'status', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'name', 'email', 'subject', 'message', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'name', 'email', 'phone', 'subject', 'message', 'status', 'createdAt', 'updatedAt'])
         && data.uid is string && data.uid.size() > 0 && data.uid.size() <= 128
         && data.name is string && data.name.size() > 0 && data.name.size() <= 120
         && data.email is string && data.email.size() > 3 && data.email.size() <= 254
         && data.email.matches('^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$')
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 40))
         && data.subject is string && data.subject.size() > 0 && data.subject.size() <= 100
         && data.message is string && data.message.size() >= 8 && data.message.size() <= 1500
         && data.status in ['Nova', 'Em atendimento', 'Concluída']
@@ -393,19 +471,22 @@ service cloud.firestore {
     match /products/{productId} {
       // A loja pública lê somente o catálogo publicado. Administradores
       // autorizados podem consultar também os produtos inativos.
-      allow get, list: if isAdmin() || resource.data.active == true;
+      // Older catalog entries may still contain a public `cost` field. Hide
+      // them from customers until an admin completes the private-cost migration.
+      allow get, list: if isAdmin() || (resource.data.active == true && !('cost' in resource.data));
       allow create: if isAdmin() && validProduct(request.resource.data);
-      allow update: if isAdmin() && validProduct(request.resource.data)
+      allow update: if (isAdmin() && validProduct(request.resource.data)
         && (('createdAt' in resource.data)
           ? request.resource.data.createdAt == resource.data.createdAt
-          : !('createdAt' in request.resource.data));
-      allow delete: if false;
+          : !('createdAt' in request.resource.data)))
+        || validLegacyCostMigration(productId);
+      allow delete: if isAdmin();
     }
 
     match /productCosts/{productId} {
       allow get, list: if isAdmin();
       allow create, update: if isAdmin() && validProductCost(request.resource.data);
-      allow delete: if false;
+      allow delete: if isAdmin();
     }
 
     match /categories/{categoryId} {
@@ -420,7 +501,8 @@ service cloud.firestore {
       // get de documentos ausentes não expõe pedidos existentes de terceiros.
       allow get: if isAdmin() || (signedIn() && (resource == null || resource.data.uid == request.auth.uid));
       allow list: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
-      allow create: if validReservation(request.resource.data) && reservationCooldownWritten();
+      // Public reservations are written only by the rate-limited Functions API.
+      allow create: if false;
       allow update: if isAdmin()
         && validAdminReservation(request.resource.data)
         && validTransition()
@@ -431,18 +513,16 @@ service cloud.firestore {
     }
 
     match /reservationLimits/{uid} {
-      allow get: if signedIn() && request.auth.uid == uid;
-      allow list: if false;
-      allow create: if signedIn() && request.auth.uid == uid
-        && validSubmissionCooldown(request.resource.data, uid);
-      allow update: if signedIn() && request.auth.uid == uid
-        && validSubmissionCooldown(request.resource.data, uid)
-        && request.time >= resource.data.lastSubmittedAt + duration.value(30, 's');
-      allow delete: if false;
+      allow read, write: if false;
+    }
+
+    match /submissionRateLimits/{rateLimitId} {
+      allow read, write: if false;
     }
 
     match /coupons/{couponId} {
-      allow get, list: if isAdmin() || (verifiedMember() && resource.data.status == 'published');
+      allow get: if isAdmin() || resource == null || (isActiveVip() && resource.data.status == 'published');
+      allow list: if isAdmin() || (isActiveVip() && resource.data.status == 'published');
       allow create: if isAdmin() && validCoupon(request.resource.data);
       allow update: if isAdmin()
         && validCoupon(request.resource.data)
@@ -452,11 +532,11 @@ service cloud.firestore {
         && request.resource.data.createdAt == resource.data.createdAt
         && request.resource.data.status in ['draft', 'published']
         && request.resource.data.updatedAt is timestamp;
-      allow delete: if false;
+      allow delete: if isAdmin();
     }
 
     match /campaigns/{campaignId} {
-      allow get, list: if isAdmin() || (verifiedMember() && resource.data.status == 'published');
+      allow get, list: if isAdmin() || (isActiveVip() && resource.data.status == 'published');
       allow create: if isAdmin() && validCampaign(request.resource.data);
       allow update: if isAdmin()
         && validCampaign(request.resource.data)
@@ -466,12 +546,13 @@ service cloud.firestore {
         && request.resource.data.createdAt == resource.data.createdAt
         && request.resource.data.status in ['draft', 'published']
         && request.resource.data.updatedAt is timestamp;
-      allow delete: if false;
+      allow delete: if isAdmin();
     }
 
     match /messages/{messageId} {
       allow get, list: if isAdmin();
-      allow create: if signedIn() && validMessage(request.resource.data) && messageCooldownWritten();
+      // Public messages are written only by the rate-limited Functions API.
+      allow create: if false;
       allow update: if isAdmin()
         && validMessageData(request.resource.data)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
@@ -487,21 +568,32 @@ service cloud.firestore {
     }
 
     match /messageLimits/{uid} {
-      allow get: if signedIn() && request.auth.uid == uid;
-      allow list: if false;
-      allow create: if signedIn() && request.auth.uid == uid
-        && validSubmissionCooldown(request.resource.data, uid);
-      allow update: if signedIn() && request.auth.uid == uid
-        && validSubmissionCooldown(request.resource.data, uid)
-        && request.time >= resource.data.lastSubmittedAt + duration.value(30, 's');
-      allow delete: if false;
+      allow read, write: if false;
     }
 
     match /settings/{settingId} {
-      allow get: if settingId == 'cloudinary';
+      allow get: if settingId == 'cloudinary' || (settingId == 'vip' && (isAdmin() || isActiveVip()));
       allow list: if false;
       allow create, update: if isAdmin() && settingId == 'cloudinary'
         && validCloudinarySetting(request.resource.data);
+      allow create, update: if isAdmin() && settingId == 'vip' && validVipSetting(request.resource.data);
+      allow delete: if false;
+    }
+
+    match /vipUsers/{uid} {
+      allow get: if isAdmin() || (signedIn() && request.auth.uid == uid);
+      allow list: if isAdmin();
+      // VIP access is granted only by an authorized administrator. A verified
+      // account alone must never be able to grant itself access to the group.
+      allow create: if isAdmin() && validVipMember(request.resource.data, uid);
+      allow update: if isAdmin()
+        && validVipMember(request.resource.data, uid)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.name == resource.data.name
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.phone == resource.data.phone
+        && request.resource.data.createdAt == resource.data.createdAt;
       allow delete: if false;
     }
 
@@ -510,4 +602,3 @@ service cloud.firestore {
     }
   }
 }
-

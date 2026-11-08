@@ -8,4 +8,3 @@ functions/node_modules/
 functions/.env*
 *.log
 npm-debug.log*
-

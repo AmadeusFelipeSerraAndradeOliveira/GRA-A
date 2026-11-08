@@ -1,20 +1,21 @@
 # Revisão das regras do Firestore
 
-## Controles atuais
+## Controles locais preparados
 
-- Administração requer uma conta autenticada com e-mail verificado e `admin: true` em custom claims ou documento `admins/{uid}` gerenciado pelo proprietário. O cliente não pode editar essa coleção.
-- Produtos e categorias podem ser lidos publicamente somente quando `active == true`; só administradores podem criar ou editar. Produtos exigem URL segura Cloudinary e ID em `graca/products/`. Custos ficam em `productCosts/{id}`, coleção acessível apenas a administradores.
-- A reserva exige autenticação, vínculo com o UID da sessão, até seis combinações, preço conferido com o catálogo, total recalculado e atualização atômica de um limite de 30 segundos por UID. Um pedido pendente não desconta estoque. Só administradores podem avançar estados válidos; exclusão de pedido é negada.
-- Mensagens podem ser enviadas por sessões autenticadas, com limites de tamanho e lote atômico com limite de 30 segundos por UID. A leitura e atualização ficam restritas a administradores; exclusão é negada.
-- Cupons e campanhas em rascunho ficam restritos a administradores. Conteúdo publicado requer conta de membro verificada. Clientes, pedidos, produtos, cupons, campanhas e mensagens não podem ser excluídos pelo cliente.
-- O encerramento financeiro valida canal, forma de pagamento e parcelas que fecham o valor final registrado.
+- Administração exige sessão autenticada com e-mail verificado e `admin: true` em custom claim ou em `admins/{uid}`. O site não concede nem remove permissões administrativas.
+- Leitura pública do catálogo é limitada a produtos e categorias ativos. A escrita de produtos, categorias, custos, cupons, campanhas, configurações, status de pedidos, VIP e mensagens é restrita à equipe autorizada.
+- Custos de aquisição ficam em `productCosts/{productId}`; não fazem parte do documento público de produto. A regra mantém uma migração estreita para documentos antigos que ainda tenham `cost`.
+- Reservas e mensagens novas não podem ser criadas diretamente pelo navegador. As Functions autenticam o token Firebase, derivam o IP no servidor e aplicam limites transacionais independentes por UID e por origem IP (rede `/64` para IPv6). O início de pagamento usa o mesmo limite; consultas de status têm janela de cinco segundos. O hash de IP usa `PUBLIC_FORM_RATE_LIMIT_KEY`; os documentos de IP expiram por TTL depois de 30 dias.
+- A API de reserva valida o catálogo, o preço, a disponibilidade e o cupom VIP publicado em uma transação. O limite de usos do cupom é reservado atomicamente e liquidado quando o pedido é concluído ou cancelado. A chave de repetição do pedido evita duplicar uma mesma solicitação.
+- Os pedidos não podem ser apagados. Os clientes não podem ser apagados. Produtos podem ser removidos pelo administrador, mantendo os snapshots existentes nos pedidos.
+- Cupons e campanhas podem ser excluídos pelo administrador e os clientes VIP ativos leem somente os itens publicados. `vipUsers/{uid}` não pode ser criado pelo próprio cliente; só administrador concede a associação.
+- O link do grupo é restrito ao administrador e membros VIP ativos. A ativação VIP pode gerar uma mensagem na coleção `mail` para a extensão Firebase Trigger Email.
+- O encerramento financeiro valida canal, método de pagamento, valor, quantidade de parcelas e soma das parcelas.
 
-## Validação e limites
+## Implantação e teste
 
-- O Firebase CLI compilou e publicou estas regras no projeto `graca-454ff` em 07/11/2026.
-- `npm run build` valida a sintaxe e as verificações estáticas dos fluxos; não substitui testes de autorização no Firestore Emulator.
-- Os testes positivos/negativos do Emulator não foram executados porque Java não está disponível nesta máquina. Não foi criada reserva de teste na base de produção.
-- O limite de envio é por UID. Sessões anônimas adicionais podem contorná-lo; App Check/reCAPTCHA e o enforcement ainda precisam de configuração no Console Firebase.
-- Administradores devem confirmar o e-mail antes de acessar dados administrativos. Se categorias e mensagens falharem no painel, confira o estado de verificação da conta e o documento `admins/{uid}`/claim. A coleção `categories` deve estar consultada com `active == true` para usuários públicos.
-- A migração de produtos antigos que ainda tenham `cost` incorporado ocorre quando uma conta administrativa abre a aba Produtos. Verifique se a migração terminou antes de considerar todos os custos ocultos dos documentos públicos.
-- Os relatórios financeiros usam no máximo 250 pedidos carregados e a margem usa o custo atual do produto, sem histórico de custo por venda.
+As regras neste arquivo são a versão local revisada. O site precisa que as Functions públicas estejam implantadas antes de publicar as regras que negam criação direta de `orders` e `messages`; do contrário, reserva e contato ficam indisponíveis. Cadastre `PUBLIC_FORM_RATE_LIMIT_KEY` no Secret Manager antes de implantar as Functions. Cloud Functions/Secret Manager requerem plano Blaze.
+
+`npm run build` verifica a sintaxe dos arquivos e os caminhos principais. A compilação das regras e os testes positivos/negativos com Emulator Suite precisam ser executados antes de considerar a autorização plenamente validada. Uma execução do formulário de reserva na produção cria um registro persistente e não deve ser usada como teste descartável.
+
+O limite por IP enfrenta a criação de novos UIDs anônimos na mesma origem; VPNs, proxies e a troca de rede ainda podem contorná-lo. App Check pode complementar esta barreira depois de registrar o provedor e ativar a aplicação das verificações.

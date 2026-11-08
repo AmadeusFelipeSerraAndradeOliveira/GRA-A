@@ -21,4 +21,3 @@ Este Cloudflare Worker assina cada envio para o Cloudinary no servidor. A loja e
 O Worker permite somente os domínios enumerados em `ALLOWED_ORIGINS`. Ao usar outro domínio publicado ou endereço local, atualize essa lista antes de publicar o Worker. O projeto Firebase deve permitir o login anônimo para reservas; para o upload, o administrador precisa usar e-mail/senha e confirmar o e-mail.
 
 Remover a foto no editor remove a referência do produto; não apaga o ativo do Cloudinary. A exclusão do arquivo remoto não faz parte deste endpoint.
-
