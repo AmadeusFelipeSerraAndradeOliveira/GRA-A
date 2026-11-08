@@ -1,6 +1,7 @@
 node_modules/
 functions/node_modules/
 .firebase/
+.wrangler/
 .codex/
 .env
 .env.*

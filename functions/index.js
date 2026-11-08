@@ -1,6 +1,8 @@
 const crypto = require("node:crypto");
+const { isIP } = require("node:net");
 const admin = require("firebase-admin");
 const { onRequest } = require("firebase-functions/v2/https");
+const { onDocumentUpdated, onDocumentWritten } = require("firebase-functions/v2/firestore");
 const { defineBoolean, defineSecret } = require("firebase-functions/params");
 
 admin.initializeApp();
@@ -8,11 +10,14 @@ const db = admin.firestore();
 const MP_CLIENT_ID = defineSecret("MP_CLIENT_ID");
 const MP_CLIENT_SECRET = defineSecret("MP_CLIENT_SECRET");
 const MP_WEBHOOK_SECRET = defineSecret("MP_WEBHOOK_SECRET");
+const PUBLIC_FORM_RATE_LIMIT_KEY = defineSecret("PUBLIC_FORM_RATE_LIMIT_KEY");
 const MP_TEST_MODE = defineBoolean("MP_TEST_MODE", { default: true });
 const REGION = "southamerica-east1";
 const allowedOrigins = [
   "http://localhost:5500",
   "http://127.0.0.1:5500",
+  "http://localhost:5501",
+  "http://127.0.0.1:5501",
   "https://graca-454ff.web.app",
   "https://graca-454ff.firebaseapp.com"
 ];
@@ -115,42 +120,8 @@ async function reserveOrder({ orderRef, uid, email, clientOrderId, request }) {
   if (normalized.some(item => !item.id || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20)) throw new Error("CART_INVALID");
   if (new Set(normalized.map(item => `${item.id}:${item.size}`)).size !== normalized.length) throw new Error("CART_INVALID");
   const productRefs = [...new Map(normalized.map(item => [item.id, products.doc(item.id)])).values()];
-  const productSnapshots = await db.getAll(...productRefs);
-  const byId = new Map(productSnapshots.map(snapshot => [snapshot.id, snapshot]));
-  const saleItems = normalized.map(item => {
-    const snapshot = byId.get(item.id);
-    if (!snapshot?.exists) throw new Error("PRODUCT_UNAVAILABLE");
-    const product = snapshot.data();
-    if (product.active === false) throw new Error("PRODUCT_UNAVAILABLE");
-    const basePrice = moneyNumber(product.price);
-    const discount = Math.max(0, Math.min(100, Number(product.discount || 0)));
-    const unitPrice = moneyNumber(basePrice * (100 - discount) / 100);
-    if (unitPrice === null || unitPrice <= 0 || !Array.isArray(product.sizes) || !product.sizes.includes(item.size)) throw new Error("PRODUCT_INVALID");
-    return {
-      id: item.id,
-      size: item.size,
-      quantity: item.quantity,
-      productName: String(product.name || item.id),
-      unitPrice,
-      unitCostAtSale: product.cost != null && Number.isFinite(Number(product.cost)) ? Number(product.cost) : null,
-      stock: Number(product.stock || 0)
-    };
-  });
-  const itemTotals = saleItems.map(item => ({ ...item, lineTotal: moneyNumber(item.unitPrice * item.quantity) }));
-  const subtotal = moneyNumber(itemTotals.reduce((sum, item) => sum + item.lineTotal, 0));
-  let couponRef = null;
-  let couponPercent = 0;
   const couponCode = String(request?.coupon || "").trim().toUpperCase();
-  if (couponCode) {
-    couponRef = coupons.doc(couponCode);
-    const couponSnapshot = await couponRef.get();
-    if (!couponSnapshot.exists) throw new Error("COUPON_INVALID");
-    const coupon = couponSnapshot.data();
-    couponPercent = Number(coupon.value || 0);
-    if (!coupon.active || couponPercent < 1 || couponPercent > 100) throw new Error("COUPON_INVALID");
-  }
-  const total = moneyNumber(subtotal * (100 - couponPercent) / 100);
-  if (total === null || total <= 0) throw new Error("TOTAL_INVALID");
+  const couponRef = couponCode ? coupons.doc(couponCode) : null;
   const address = request?.address || {};
   for (const field of ["zip", "street", "number", "district", "city", "state"]) {
     if (typeof address[field] !== "string" || !address[field].trim()) throw new Error("ADDRESS_INVALID");
@@ -167,7 +138,19 @@ async function reserveOrder({ orderRef, uid, email, clientOrderId, request }) {
     }
     const liveProducts = await Promise.all(productRefs.map(ref => transaction.get(ref)));
     const liveCoupon = couponRef ? await transaction.get(couponRef) : null;
+    const liveVip = couponRef ? await transaction.get(db.collection("vipUsers").doc(uid)) : null;
     const liveById = new Map(liveProducts.map(snapshot => [snapshot.id, snapshot]));
+    const saleItems = normalized.map(item => {
+      const snapshot = liveById.get(item.id);
+      if (!snapshot?.exists) throw new Error("PRODUCT_UNAVAILABLE");
+      const product = snapshot.data();
+      if (product.active === false) throw new Error("PRODUCT_UNAVAILABLE");
+      const basePrice = moneyNumber(product.price);
+      const discount = Math.max(0, Math.min(99, Number(product.discount || 0)));
+      const unitPrice = moneyNumber(basePrice * (100 - discount) / 100);
+      if (unitPrice === null || unitPrice <= 0 || !Array.isArray(product.sizes) || !product.sizes.includes(item.size)) throw new Error("PRODUCT_INVALID");
+      return { id: item.id, size: item.size, quantity: item.quantity, productName: String(product.name || item.id), unitPrice, stock: Number(product.stock || 0) };
+    });
     const quantitiesByProduct = new Map();
     for (const item of saleItems) quantitiesByProduct.set(item.id, (quantitiesByProduct.get(item.id) || 0) + item.quantity);
     for (const [productId, quantity] of quantitiesByProduct) {
@@ -176,19 +159,26 @@ async function reserveOrder({ orderRef, uid, email, clientOrderId, request }) {
       const available = Number(product?.stock || 0) - Number(product?.reservedStock || 0);
       if (!snapshot?.exists || product.active === false || available < quantity) throw new Error("STOCK_UNAVAILABLE");
     }
+    const itemTotals = saleItems.map(item => ({ ...item, lineTotal: moneyNumber(item.unitPrice * item.quantity) }));
+    const subtotal = moneyNumber(itemTotals.reduce((sum, item) => sum + item.lineTotal, 0));
+    let couponPercent = 0;
     if (couponRef) {
       const coupon = liveCoupon?.data();
+      couponPercent = Number(coupon?.value || 0);
       const maxUses = coupon?.maxUses == null ? null : Number(coupon.maxUses);
-      if (!liveCoupon?.exists || !coupon.active || (maxUses !== null && Number(coupon.uses || 0) + Number(coupon.reservedUses || 0) >= maxUses)) throw new Error("COUPON_UNAVAILABLE");
+      if (!liveCoupon?.exists || coupon.status !== "published" || liveVip?.data()?.status !== "active" || couponPercent < 1 || couponPercent > 99
+        || (maxUses !== null && Number(coupon.uses || 0) + Number(coupon.reservedUses || 0) >= maxUses)) throw new Error("COUPON_UNAVAILABLE");
       transaction.update(couponRef, { reservedUses: admin.firestore.FieldValue.increment(1) });
     }
+    const total = moneyNumber(subtotal * (100 - couponPercent) / 100);
+    if (total === null || total <= 0) throw new Error("TOTAL_INVALID");
     for (const [productId, quantity] of quantitiesByProduct) transaction.update(products.doc(productId), { reservedStock: admin.firestore.FieldValue.increment(quantity) });
     transaction.create(orderRef, {
       id: clientOrderId,
       uid,
       email,
       name: String(request?.name || "").slice(0, 120),
-      items: itemTotals.map(({ stock, ...item }) => item),
+      items: itemTotals.map(({ stock, lineTotal, ...item }) => item),
       subtotal,
       coupon: couponCode || "",
       couponPercent,
@@ -211,7 +201,7 @@ async function reserveOrder({ orderRef, uid, email, clientOrderId, request }) {
       couponReserved: Boolean(couponRef),
       couponCounted: false
     });
-    return { created: true, total, items: itemTotals.map(({ stock, ...item }) => item), idempotencyKey };
+    return { created: true, total, items: itemTotals.map(({ stock, lineTotal, ...item }) => item), idempotencyKey };
   });
 }
 
@@ -297,7 +287,7 @@ exports.mercadopagoConfig = onRequest({
 exports.mercadopagoOrder = onRequest({
   region: REGION,
   cors: allowedOrigins,
-  secrets: [MP_CLIENT_ID, MP_CLIENT_SECRET]
+  secrets: [MP_CLIENT_ID, MP_CLIENT_SECRET, PUBLIC_FORM_RATE_LIMIT_KEY]
 }, async (req, res) => {
   if (!(["GET", "POST"].includes(req.method))) return sendError(res, 405, "Método não permitido.");
   let user;
@@ -310,6 +300,11 @@ exports.mercadopagoOrder = onRequest({
     const snapshot = await orderRef.get();
     if (!snapshot.exists || snapshot.data().uid !== user.uid || !snapshot.data().mercadoPagoOrderId) return sendError(res, 404, "Order não encontrada.");
     try {
+      const ipHash = sourceIpHash(normalizedSourceIp(req), PUBLIC_FORM_RATE_LIMIT_KEY.value(), "payment-poll");
+      await db.runTransaction(async transaction => {
+        const limits = await readFormRateLimits(transaction, "paymentPoll", user.uid, ipHash, 5000);
+        writeFormRateLimits(transaction, "paymentPoll", user.uid, limits);
+      });
       const credentials = await getMercadoPagoCredentials();
       const response = await fetch(`https://api.mercadopago.com/v1/orders/${encodeURIComponent(snapshot.data().mercadoPagoOrderId)}`, {
         headers: { Authorization: `Bearer ${credentials.accessToken}` },
@@ -320,6 +315,7 @@ exports.mercadopagoOrder = onRequest({
       await updateOrderFromMarketplaceOrder(orderRef, marketplaceOrder);
       return res.status(200).json(publicOrderResponse(marketplaceOrder));
     } catch (error) {
+      if (error.message === "RATE_LIMITED") return sendError(res, 429, "Aguarde alguns segundos antes de consultar novamente.");
       console.error("Mercado Pago order lookup error:", error.message);
       return sendError(res, 502, "Não foi possível consultar a order.");
     }
@@ -332,11 +328,23 @@ exports.mercadopagoOrder = onRequest({
   const orderRef = orders.doc(order.clientOrderId);
   let reserved;
   try {
+    // Verified accounts can still be automated; protect inventory reservations
+    // across accounts on the same source network, while allowing an idempotent
+    // retry of an order that already exists.
+    const priorOrder = await orderRef.get();
+    if (!priorOrder.exists) {
+      const ipHash = sourceIpHash(normalizedSourceIp(req), PUBLIC_FORM_RATE_LIMIT_KEY.value(), "payment");
+      await db.runTransaction(async transaction => {
+        const limits = await readFormRateLimits(transaction, "payment", user.uid, ipHash);
+        writeFormRateLimits(transaction, "payment", user.uid, limits);
+      });
+    }
     reserved = await reserveOrder({ orderRef, uid: user.uid, email: user.email, clientOrderId: order.clientOrderId, request: { ...order, name: user.name || order.name || "" } });
     if (reserved.existing?.mercadoPagoOrderId) return res.status(200).json(reserved.existing.paymentResponse || { id: reserved.existing.mercadoPagoOrderId, order_id: reserved.existing.mercadoPagoOrderId, status: reserved.existing.marketplaceOrderStatus || "processing", status_detail: reserved.existing.marketplaceOrderStatusDetail || "in_process" });
   } catch (error) {
     const status = error.message === "ORDER_CONFLICT" ? 403 : error.message.includes("INVALID") || error.message.includes("UNAVAILABLE") ? 400 : 500;
-    return sendError(res, status, error.message === "STOCK_UNAVAILABLE" ? "Estoque insuficiente para um ou mais itens." : error.message === "COUPON_INVALID" || error.message === "COUPON_UNAVAILABLE" ? "Cupom indisponível. Atualize a sacola." : "Não foi possível validar o pedido.");
+    const responseStatus = error.message === "RATE_LIMITED" ? 429 : status;
+    return sendError(res, responseStatus, error.message === "RATE_LIMITED" ? "Aguarde 30 segundos antes de iniciar outro pagamento." : error.message === "STOCK_UNAVAILABLE" ? "Estoque insuficiente para um ou mais itens." : error.message === "COUPON_INVALID" || error.message === "COUPON_UNAVAILABLE" ? "Cupom indisponível. Atualize a sacola." : "Não foi possível validar o pedido.");
   }
   const total = moneyNumber(reserved.total || reserved.existing?.total);
   const paymentMethod = methodId === "pix"
@@ -449,4 +457,319 @@ exports.mercadopagoWebhook = onRequest({
     console.error("Mercado Pago webhook error:", error.message);
     return res.sendStatus(500);
   }
+});
+
+function requestUser(req) {
+  const match = String(req.get("authorization") || "").match(/^Bearer (.+)$/i);
+  if (!match) throw new Error("UNAUTHENTICATED");
+  return admin.auth().verifyIdToken(match[1]);
+}
+
+function normalizedSourceIp(req) {
+  let raw = String(req.ip || "").trim().replace(/^\[|\]$/g, "").split("%")[0].toLowerCase();
+  if (!raw || !isIP(raw)) throw new Error("SOURCE_IP_UNAVAILABLE");
+  if (isIP(raw) === 4) return `ipv4:${raw}`;
+  if (raw.includes(".")) {
+    const separator = raw.lastIndexOf(":");
+    const embeddedIpv4 = raw.slice(separator + 1).split(".").map(Number);
+    if (embeddedIpv4.length !== 4 || embeddedIpv4.some(part => !Number.isInteger(part) || part < 0 || part > 255)) throw new Error("SOURCE_IP_UNAVAILABLE");
+    const first = ((embeddedIpv4[0] << 8) | embeddedIpv4[1]).toString(16);
+    const second = ((embeddedIpv4[2] << 8) | embeddedIpv4[3]).toString(16);
+    raw = `${raw.slice(0, separator + 1)}${first}:${second}`;
+  }
+
+  // Normalize IPv6 clients to their /64 network. Browsers and mobile devices
+  // may rotate the lower 64 bits, so keying on the full address would let a
+  // fresh anonymous session plus a privacy-address rotation evade the limit.
+  const halves = raw.split("::");
+  const left = halves[0] ? halves[0].split(":") : [];
+  const right = halves.length > 1 && halves[1] ? halves[1].split(":") : [];
+  const missing = 8 - left.length - right.length;
+  if (missing < 0 || (halves.length === 1 && missing !== 0)) throw new Error("SOURCE_IP_UNAVAILABLE");
+  const groups = [...left, ...Array(missing).fill("0"), ...right].map(group => group.padStart(4, "0"));
+  if (groups.length !== 8 || groups.some(group => !/^[0-9a-f]{4}$/.test(group))) throw new Error("SOURCE_IP_UNAVAILABLE");
+  if (groups.slice(0, 5).every(group => group === "0000") && groups[5] === "ffff") {
+    const ipv4 = `${parseInt(groups[6].slice(0, 2), 16)}.${parseInt(groups[6].slice(2), 16)}.${parseInt(groups[7].slice(0, 2), 16)}.${parseInt(groups[7].slice(2), 16)}`;
+    return `ipv4:${ipv4}`;
+  }
+  return `ipv6-64:${groups.slice(0, 4).join(":")}`;
+}
+
+function sourceIpHash(ip, secret, purpose) {
+  return crypto.createHmac("sha256", secret).update(`${purpose}:${ip}`).digest("hex");
+}
+
+function escapeEmailHtml(value) {
+  return String(value || "").replace(/[&<>"']/g, character => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  })[character]);
+}
+
+// Compatible with the Firebase Trigger Email extension's `mail` collection.
+// The extension and a verified SMTP sender must be configured before mail is
+// delivered; this trigger never stores SMTP credentials in the application.
+exports.queueVipWelcomeEmail = onDocumentWritten({
+  document: "vipUsers/{uid}",
+  region: REGION
+}, async event => {
+  const before = event.data?.before?.exists ? event.data.before.data() : null;
+  const after = event.data?.after?.exists ? event.data.after.data() : null;
+  if (!after || after.status !== "active" || before?.status === "active") return;
+  const email = String(after.email || "").trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || email.length > 254) return;
+  const settings = await db.doc("settings/vip").get();
+  const inviteUrl = String(settings.data()?.inviteUrl || "").trim();
+  if (!/^https:\/\/chat\.whatsapp\.com\/[A-Za-z0-9]+$/.test(inviteUrl)) {
+    console.warn("VIP welcome email skipped: group invitation link is not configured.");
+    return;
+  }
+  const name = String(after.name || "").trim().slice(0, 120) || "Pessoa querida";
+  const safeName = escapeEmailHtml(name);
+  await db.collection("mail").add({
+    to: [email],
+    message: {
+      subject: "Seu acesso à Comunidade VIP GRAÇA está liberado",
+      text: `Olá, ${name}! Seu acesso à Comunidade VIP GRAÇA está liberado. Entre pelo link seguro: ${inviteUrl}\n\nVocê receberá cupons, campanhas e novidades exclusivas da comunidade.`,
+      html: `<p>Olá, ${safeName}!</p><p>Seu acesso à Comunidade VIP GRAÇA está liberado.</p><p><a href="${inviteUrl}">Entrar no grupo fechado da GRAÇA</a></p><p>Você receberá cupons, campanhas e novidades exclusivas da comunidade.</p>`
+    },
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    templateKey: "vip-welcome"
+  });
+});
+
+// Release a coupon reservation when an admin cancels or completes a public
+// reservation. The transaction and couponReserved flag make retries safe.
+exports.settleReservationCoupon = onDocumentUpdated({
+  document: "orders/{orderId}",
+  region: REGION
+}, async event => {
+  const before = event.data?.before?.data();
+  const after = event.data?.after?.data();
+  if (!before || !after || before.status === after.status
+    || !["Cancelado", "Concluído"].includes(after.status)) return;
+  const orderRef = event.data.after.ref;
+  await db.runTransaction(async transaction => {
+    const freshSnapshot = await transaction.get(orderRef);
+    if (!freshSnapshot.exists) return;
+    const order = freshSnapshot.data();
+    if (!["Cancelado", "Concluído"].includes(order.status) || order.couponReserved !== true || !order.couponCode) return;
+    const couponRef = coupons.doc(String(order.couponCode).toUpperCase());
+    const couponSnapshot = await transaction.get(couponRef);
+    if (couponSnapshot.exists) {
+      const updates = { reservedUses: admin.firestore.FieldValue.increment(-1) };
+      if (order.status === "Concluído" && order.couponCounted !== true) {
+        updates.uses = admin.firestore.FieldValue.increment(1);
+      }
+      transaction.update(couponRef, updates);
+    }
+    transaction.update(orderRef, {
+      couponReserved: false,
+      couponCounted: order.status === "Concluído"
+    });
+  });
+});
+
+function lastSubmissionAt(snapshot) {
+  const value = snapshot?.data()?.lastSubmittedAt;
+  return value && typeof value.toMillis === "function" ? value.toMillis() : 0;
+}
+
+async function readFormRateLimits(transaction, kind, uid, ipHash, windowMs = 30000) {
+  const uidRef = db.collection(`${kind}Limits`).doc(uid);
+  const ipRef = db.collection("submissionRateLimits").doc(`${kind}_${ipHash}`);
+  const [uidLimit, ipLimit] = await Promise.all([transaction.get(uidRef), transaction.get(ipRef)]);
+  const now = Date.now();
+  if (lastSubmissionAt(uidLimit) + windowMs > now || lastSubmissionAt(ipLimit) + windowMs > now) {
+    const error = new Error("RATE_LIMITED");
+    error.statusCode = 429;
+    throw error;
+  }
+  return { uidRef, ipRef };
+}
+
+function writeFormRateLimits(transaction, kind, uid, refs) {
+  const now = Date.now();
+  const submittedAt = admin.firestore.FieldValue.serverTimestamp();
+  const expiresAt = admin.firestore.Timestamp.fromMillis(now + 30 * 24 * 60 * 60 * 1000);
+  transaction.set(refs.uidRef, { uid, lastSubmittedAt: submittedAt });
+  transaction.set(refs.ipRef, { kind, lastSubmittedAt: submittedAt, expireAt: expiresAt });
+}
+
+function validPublicOrderId(value) {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{16,64}$/.test(value);
+}
+
+function publicFormError(res, error) {
+  const status = Number(error.statusCode) || (error.message === "UNAUTHENTICATED" ? 401 : error.message.includes("INVALID") || error.message.includes("UNAVAILABLE") ? 400 : 500);
+  const messages = {
+    RATE_LIMITED: "Aguarde 30 segundos antes de enviar outra solicitação.",
+    CART_INVALID: "Revise os itens e quantidades da solicitação.",
+    PRODUCT_UNAVAILABLE: "Um produto não está mais disponível. Revise o carrinho.",
+    STOCK_UNAVAILABLE: "O estoque mudou. Revise o carrinho antes de enviar.",
+    ADDRESS_INVALID: "Confira o endereço de entrega.",
+    COUPON_UNAVAILABLE: "Este cupom não está disponível.",
+    VIP_REQUIRED: "Para usar este cupom, entre em uma conta VIP ativa e confirmada.",
+    ORDER_CONFLICT: "Não foi possível validar esta solicitação. Atualize o carrinho.",
+    MESSAGE_INVALID: "Confira os dados e o tamanho da mensagem.",
+    SOURCE_IP_UNAVAILABLE: "Não foi possível verificar a solicitação. Tente novamente.",
+    UNAUTHENTICATED: "A sessão expirou. Atualize a página e tente novamente."
+  };
+  if (status >= 500) console.error("Public GRAÇA form failed:", error.message || error);
+  return res.status(status).json({ error: messages[error.message] || "Não foi possível concluir. Tente novamente." });
+}
+
+exports.publicReservation = onRequest({
+  region: REGION,
+  cors: allowedOrigins,
+  secrets: [PUBLIC_FORM_RATE_LIMIT_KEY]
+}, async (req, res) => {
+  if (req.method !== "POST") return sendError(res, 405, "Método não permitido.");
+  let user, ip, ipHash;
+  try {
+    user = await requestUser(req);
+    ip = normalizedSourceIp(req);
+    ipHash = sourceIpHash(ip, PUBLIC_FORM_RATE_LIMIT_KEY.value(), "reservation");
+  } catch (error) { return publicFormError(res, error); }
+
+  const body = req.body || {};
+  const clientOrderId = body.clientOrderId;
+  if (!validPublicOrderId(clientOrderId)) return sendError(res, 400, "Solicitação inválida.");
+  if (!Array.isArray(body.items) || body.items.length < 1 || body.items.length > 6) return publicFormError(res, new Error("CART_INVALID"));
+  const items = body.items.map(item => ({
+    productId: String(item?.productId || ""),
+    size: String(item?.size || ""),
+    quantity: Number(item?.quantity)
+  }));
+  if (items.some(item => !item.productId || item.productId.length > 150 || item.productId.includes("/")
+    || !item.size || item.size.length > 40 || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20)
+    || new Set(items.map(item => `${item.productId}:${item.size}`)).size !== items.length) return publicFormError(res, new Error("CART_INVALID"));
+  const customerName = String(body.customerName || "").trim();
+  const phone = String(body.phone || "").replace(/[^\d+()\s-]/g, "").trim().slice(0, 40);
+  const deliveryMethod = String(body.deliveryMethod || "");
+  const addressInput = body.address && typeof body.address === "object" ? body.address : {};
+  const address = deliveryMethod === "Entrega" ? {
+    zip: String(addressInput.zip || "").trim().slice(0, 12),
+    street: String(addressInput.street || "").trim().slice(0, 120),
+    number: String(addressInput.number || "").trim().slice(0, 20),
+    district: String(addressInput.district || "").trim().slice(0, 80),
+    city: String(addressInput.city || "").trim().slice(0, 80),
+    state: String(addressInput.state || "").trim().toUpperCase().slice(0, 2)
+  } : {};
+  if (customerName.length < 1 || customerName.length > 120 || phone.length < 7 || !["Retirada", "Entrega"].includes(deliveryMethod)) return publicFormError(res, new Error("ADDRESS_INVALID"));
+  if (deliveryMethod === "Entrega" && (!address.zip || !address.street || !address.number || !address.district || !address.city || address.state.length !== 2)) return publicFormError(res, new Error("ADDRESS_INVALID"));
+
+  const orderRef = orders.doc(clientOrderId);
+  const productRefs = [...new Map(items.map(item => [item.productId, products.doc(item.productId)])).values()];
+  const couponCode = String(body.couponCode || "").trim().toUpperCase();
+  if (couponCode && !/^[A-Z0-9_-]{3,30}$/.test(couponCode)) return publicFormError(res, new Error("COUPON_UNAVAILABLE"));
+  const couponRef = couponCode ? coupons.doc(couponCode) : null;
+
+  try {
+    const result = await db.runTransaction(async transaction => {
+      const existingSnapshot = await transaction.get(orderRef);
+      if (existingSnapshot.exists) {
+        const prior = existingSnapshot.data();
+        const oldItems = (prior.items || []).map(item => [item.productId, item.size, Number(item.quantity)]);
+        const newItems = items.map(item => [item.productId, item.size, item.quantity]);
+        if (prior.uid !== user.uid || JSON.stringify(oldItems) !== JSON.stringify(newItems)
+          || prior.phone !== phone || prior.customerName !== customerName
+          || prior.deliveryMethod !== deliveryMethod || prior.couponCode !== couponCode
+          || JSON.stringify(prior.address || {}) !== JSON.stringify(address)) throw new Error("ORDER_CONFLICT");
+        return { existing: true, orderId: clientOrderId, confirmationCode: prior.confirmationCode, status: prior.status, totalCents: prior.totalCents };
+      }
+
+      const productSnapshots = await Promise.all(productRefs.map(ref => transaction.get(ref)));
+      const couponSnapshot = couponRef ? await transaction.get(couponRef) : null;
+      const vipSnapshot = couponRef ? await transaction.get(db.collection("vipUsers").doc(user.uid)) : null;
+      const limits = await readFormRateLimits(transaction, "reservation", user.uid, ipHash);
+      const productMap = new Map(productSnapshots.map(snapshot => [snapshot.id, snapshot]));
+      const itemsByProduct = new Map();
+      for (const item of items) itemsByProduct.set(item.productId, (itemsByProduct.get(item.productId) || 0) + item.quantity);
+      const canonicalItems = items.map(item => {
+        const snapshot = productMap.get(item.productId);
+        if (!snapshot?.exists || snapshot.data().active !== true) throw new Error("PRODUCT_UNAVAILABLE");
+        const product = snapshot.data();
+        if (!Array.isArray(product.sizes) || !product.sizes.includes(item.size)) throw new Error("PRODUCT_UNAVAILABLE");
+        const price = Number(product.price), discount = Math.max(0, Math.min(99, Number(product.discount || 0)));
+        const unitPriceCents = Math.round(price * (100 - discount));
+        if (!Number.isFinite(unitPriceCents) || unitPriceCents < 1) throw new Error("PRODUCT_UNAVAILABLE");
+        return { productId: item.productId, name: String(product.name || "").slice(0, 160), size: item.size, quantity: item.quantity, unitPriceCents };
+      });
+      for (const [productId, quantity] of itemsByProduct) {
+        const snapshot = productMap.get(productId), product = snapshot?.data();
+        if (!snapshot?.exists || Number(product.stock || 0) - Number(product.reservedStock || 0) < quantity) throw new Error("STOCK_UNAVAILABLE");
+      }
+      const subtotalCents = canonicalItems.reduce((sum, item) => sum + item.unitPriceCents * item.quantity, 0);
+      let couponPercent = 0;
+      if (couponRef) {
+        const provider = String(user.firebase?.sign_in_provider || "");
+        if (user.email_verified !== true || !user.email || provider === "anonymous" || vipSnapshot?.data()?.status !== "active") {
+          const error = new Error("VIP_REQUIRED");
+          error.statusCode = 403;
+          throw error;
+        }
+        const coupon = couponSnapshot?.data();
+        const maxUses = coupon?.maxUses == null ? null : Number(coupon.maxUses);
+        if (!couponSnapshot?.exists || coupon.status !== "published" || !Number.isInteger(Number(coupon.value))
+          || Number(coupon.value) < 1 || Number(coupon.value) > 99
+          || (maxUses !== null && Number(coupon.uses || 0) + Number(coupon.reservedUses || 0) >= maxUses)) throw new Error("COUPON_UNAVAILABLE");
+        couponPercent = Number(coupon.value);
+        transaction.update(couponRef, { reservedUses: admin.firestore.FieldValue.increment(1) });
+      }
+      const discountCents = Math.round(subtotalCents * couponPercent / 100);
+      const totalCents = subtotalCents - discountCents;
+      const now = admin.firestore.FieldValue.serverTimestamp();
+      const confirmationCode = `GRA-${clientOrderId.toUpperCase()}`;
+      transaction.create(orderRef, {
+        uid: user.uid, confirmationCode, customerName, phone, items: canonicalItems,
+        totalCents, subtotalCents, discountCents, couponCode, couponPercent,
+        couponReserved: Boolean(couponRef), couponCounted: false,
+        deliveryMethod, address,
+        pickupDetails: String(body.pickupDetails || "").trim().slice(0, 160),
+        notes: String(body.notes || "").trim().slice(0, 500),
+        marketingConsent: body.marketingConsent === true,
+        status: "Aguardando confirmação", statusHistory: ["Aguardando confirmação"],
+        stockApplied: false, stockRestored: false,
+        createdAt: now, updatedAt: now
+      });
+      writeFormRateLimits(transaction, "reservation", user.uid, limits);
+      return { existing: false, orderId: clientOrderId, confirmationCode, status: "Aguardando confirmação", totalCents, subtotalCents, discountCents, couponPercent };
+    });
+    return res.status(200).json(result);
+  } catch (error) { return publicFormError(res, error); }
+});
+
+exports.publicMessage = onRequest({
+  region: REGION,
+  cors: allowedOrigins,
+  secrets: [PUBLIC_FORM_RATE_LIMIT_KEY]
+}, async (req, res) => {
+  if (req.method !== "POST") return sendError(res, 405, "Método não permitido.");
+  let user, ipHash;
+  try {
+    user = await requestUser(req);
+    const ip = normalizedSourceIp(req);
+    ipHash = sourceIpHash(ip, PUBLIC_FORM_RATE_LIMIT_KEY.value(), "message");
+  } catch (error) { return publicFormError(res, error); }
+  const body = req.body || {};
+  // Honeypot: respond as if accepted while intentionally skipping all storage.
+  if (String(body.companyWebsite || "").trim()) return res.status(200).json({ ok: true });
+  const name = String(body.name || "").trim();
+  const email = String(body.email || "").trim().toLowerCase();
+  const phone = String(body.phone || "").replace(/[^\d+()\s-]/g, "").trim().slice(0, 40);
+  const subject = String(body.subject || "").trim();
+  const message = String(body.message || "").trim();
+  if (name.length < 1 || name.length > 120 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || email.length > 254
+    || subject.length < 1 || subject.length > 100 || message.length < 8 || message.length > 1500) return publicFormError(res, new Error("MESSAGE_INVALID"));
+  try {
+    const messageRef = db.collection("messages").doc();
+    const result = await db.runTransaction(async transaction => {
+      const limits = await readFormRateLimits(transaction, "message", user.uid, ipHash);
+      const now = admin.firestore.FieldValue.serverTimestamp();
+      transaction.create(messageRef, { uid: user.uid, name, email, ...(phone ? { phone } : {}), subject, message, status: "Nova", createdAt: now, updatedAt: now });
+      writeFormRateLimits(transaction, "message", user.uid, limits);
+      return { ok: true };
+    });
+    return res.status(200).json(result);
+  } catch (error) { return publicFormError(res, error); }
 });
