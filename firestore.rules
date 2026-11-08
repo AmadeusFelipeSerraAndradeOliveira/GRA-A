@@ -376,17 +376,23 @@ service cloud.firestore {
         && data.createdAt is timestamp && data.updatedAt is timestamp;
     }
 
+    function hasCustomerProfile(uid) {
+      return exists(/databases/$(database)/documents/customers/$(uid));
+    }
+
     function isVerifiedVipMember(uid) {
       return signedIn()
         && request.auth.uid == uid
+        && hasCustomerProfile(uid)
         && request.auth.token.email_verified == true
         && request.auth.token.firebase.sign_in_provider != 'anonymous';
     }
 
     function isActiveVip() {
-      // Verificação de e-mail libera o VIP automaticamente. Um documento
-      // administrativo pode bloquear ou remover o acesso de forma explícita.
+      // E-mail verificado e ficha de cliente liberam o VIP automaticamente.
+      // Um status não ativo definido pelo admin continua revogando o acesso.
       return signedIn()
+        && hasCustomerProfile(request.auth.uid)
         && request.auth.token.email_verified == true
         && request.auth.token.firebase.sign_in_provider != 'anonymous'
         && (!exists(/databases/$(database)/documents/vipUsers/$(request.auth.uid))
@@ -534,7 +540,10 @@ service cloud.firestore {
       allow update: if signedIn() && request.auth.uid == uid
         && validCustomerUpdate(request.resource.data, uid)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'phone', 'address', 'marketingConsent', 'updatedAt']);
-      allow delete: if isAdmin();
+      // Keep the customer profile and VIP row linked. If a VIP row exists,
+      // both records must be deleted in the same admin batch.
+      allow delete: if isAdmin()
+        && !existsAfter(/databases/$(database)/documents/vipUsers/$(uid));
     }
 
     match /products/{productId} {
@@ -679,13 +688,15 @@ service cloud.firestore {
       allow list: if isAdmin();
       // A confirmed e-mail can create its own active membership record. Admins
       // retain the ability to manage explicit blocks and manual records.
-      allow create: if validVipMember(request.resource.data, uid)
+      allow create: if hasCustomerProfile(uid)
+        && validVipMember(request.resource.data, uid)
         && (isAdmin()
           || (isVerifiedVipMember(uid)
             && request.resource.data.status == 'active'
             && request.resource.data.createdAt == request.time
             && request.resource.data.updatedAt == request.time));
       allow update: if isAdmin()
+        && hasCustomerProfile(uid)
         && validVipMember(request.resource.data, uid)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
         && request.resource.data.uid == resource.data.uid
@@ -693,7 +704,9 @@ service cloud.firestore {
         && request.resource.data.email == resource.data.email
         && request.resource.data.phone == resource.data.phone
         && request.resource.data.createdAt == resource.data.createdAt;
-      allow delete: if false;
+      // VIP deletion is allowed only together with removal of its customer profile.
+      allow delete: if isAdmin()
+        && !existsAfter(/databases/$(database)/documents/customers/$(uid));
     }
 
     match /{document=**} {

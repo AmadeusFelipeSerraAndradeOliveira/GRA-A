@@ -91,7 +91,8 @@ window.addEventListener('hashchange',()=>{if(location.hash==='#admin')openAdmin(
 let comments=get('comments',[]), cartCoupon=get('cartCoupon',''), pendingMemberAction='', orderStatusTab='Todos', searchEvents=get('searchEvents',[]);
 const htm=v=>String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const unitPrice=p=>Math.round(Number(p.price||0)*(100-Math.max(0,Math.min(99,Number(p.discount||0)))))/100;
-const couponOk=code=>discounts.find(d=>d.code===String(code||'').trim().toUpperCase()&&d.active&&(d.maxUses==null||Number(d.uses||0)<Number(d.maxUses)));
+const normalizeCouponCode=value=>String(value||'').trim().toUpperCase().replace(/\s+/g,'');
+const couponOk=code=>discounts.find(d=>d.code===normalizeCouponCode(code)&&d.active&&(d.maxUses==null||Number(d.uses||0)<Number(d.maxUses)));
 function saveAll(){set('products',products);set('cart',cart);set('orders',orders);set('customers',customers);set('messages',messages);set('discounts',discounts);set('comments',comments);set('cartCoupon',cartCoupon);set('searchEvents',searchEvents)}
 function renderProducts(){
  const term=$('#searchInput').value.toLowerCase(),cat=$('#categoryFilter').value||'Todas',sort=$('#sortFilter').value;
@@ -465,6 +466,8 @@ saveCustomerProfile = async function(profile) {
 
 async function getVipMembership(user) {
   if(!user?.uid||user.isAnonymous||!user.emailVerified||!user.email)return null;
+  const customerSnapshot=await getDoc(doc(db,'customers',user.uid));
+  if(!customerSnapshot.exists())return null;
   const reference=doc(db,'vipUsers',user.uid);
   let snapshot=await getDoc(reference);
   if(snapshot.exists())return {...snapshot.data(),id:user.uid};
@@ -548,7 +551,7 @@ addToCart = function(id,size) {
 };
 
 async function applyCartCoupon(code) {
-  const normalized=String(code||'').trim().toUpperCase();
+  const normalized=normalizeCouponCode(code);
   if(!normalized){cartCoupon='';appliedCartCoupon=null;set('cartCoupon','');renderCart();toast('Cupom removido.');return false;}
   if(!/^[A-Z0-9_-]{3,30}$/.test(normalized)){appliedCartCoupon=null;return toast('Confira o código do cupom.'),false;}
   try{
@@ -557,9 +560,9 @@ async function applyCartCoupon(code) {
     const snapshot=await getDoc(doc(db,'coupons',normalized));
     if(!snapshot.exists()){appliedCartCoupon=null;return toast('Cupom não encontrado ou não publicado.'),false;}
     const coupon=snapshot.data(),maxUses=coupon.maxUses==null?null:Number(coupon.maxUses);
-    if(coupon.status!=='published'||!Number.isInteger(Number(coupon.value))||Number(coupon.value)<1||Number(coupon.value)>99||(maxUses!==null&&Number(coupon.uses||0)+Number(coupon.reservedUses||0)>=maxUses)){
-      appliedCartCoupon=null;return toast('Cupom não está disponível no momento.'),false;
-    }
+    if(coupon.status!=='published'){appliedCartCoupon=null;return toast('Este cupom está como rascunho. Publique-o no painel para usar no carrinho.'),false;}
+    if(!Number.isInteger(Number(coupon.value))||Number(coupon.value)<1||Number(coupon.value)>99){appliedCartCoupon=null;return toast('O desconto deste cupom está configurado incorretamente.'),false;}
+    if(maxUses!==null&&Number(coupon.uses||0)+Number(coupon.reservedUses||0)>=maxUses){appliedCartCoupon=null;return toast('Este cupom atingiu o limite de utilizações.'),false;}
     cartCoupon=normalized;appliedCartCoupon={code:normalized,value:Number(coupon.value)};set('cartCoupon',normalized);renderCart();toast(`Cupom ${normalized} aplicado.`);return true;
   }catch(error){console.warn('Cupom não pôde ser validado:',error);appliedCartCoupon=null;return toast('Não foi possível validar o cupom agora. Tente novamente.'),false;}
 }
@@ -901,9 +904,9 @@ function messageWhatsappLink(message) {
 function renderAdminCustomers() {
   const needle=adminVipSearch.trim().toLowerCase();
   const filteredVip=vipUsers.filter(member=>`${member.name||''} ${member.email||''} ${member.phone||''}`.toLowerCase().includes(needle));
-  const vipRows=filteredVip.map(member=>`<tr><td>${htm(member.name)}</td><td>${htm(member.email)}</td><td>${htm(member.phone||'—')}</td><td>${member.status==='active'?'ATIVO':member.status==='blocked'?'BLOQUEADO':'REMOVIDO'}</td><td>${safeDate(member.createdAt).toLocaleDateString('pt-BR')}</td><td><div class="admin-actions"><button class="mini-button" data-vip-status="${htm(member.uid)}" data-next-status="${member.status==='blocked'?'active':'blocked'}">${member.status==='blocked'?'REATIVAR':'BLOQUEAR'}</button><button class="mini-button danger" data-vip-status="${htm(member.uid)}" data-next-status="removed">REMOVER VIP</button></div></td></tr>`).join('');
+  const vipRows=filteredVip.map(member=>`<tr><td>${htm(member.name)}</td><td>${htm(member.email)}</td><td>${htm(member.phone||'—')}</td><td>${member.status==='active'?'ATIVO':'INATIVO'}</td><td>${safeDate(member.createdAt).toLocaleDateString('pt-BR')}</td><td><button class="mini-button ${member.status==='active'?'danger':'primary'}" data-vip-status="${htm(member.uid)}" data-next-status="${member.status==='active'?'removed':'active'}">${member.status==='active'?'REMOVER VIP':'REATIVAR VIP'}</button></td></tr>`).join('');
   const customerRows=customers.map(customer=>[htm(customer.name),htm(customer.email),htm(customer.phone),customer.marketingConsent?'ACEITOU':'NÃO ACEITOU',safeDate(customer.createdAt).toLocaleDateString('pt-BR'),`<button class="mini-button danger" data-delete-customer="${htm(customer.uid||customer.id)}">EXCLUIR CADASTRO</button>`]);
-  $('#adminContent').innerHTML=`<div class="section-kicker">CLIENTES / COMUNIDADE VIP</div><h2>CLIENTES E MEMBROS VIP</h2><p>Excluir remove apenas a ficha em customers; a conta de login e os pedidos permanecem. A exclusão não apaga o histórico financeiro.</p><div class="admin-toolbar"><span>${customers.length} contas · ${vipUsers.filter(member=>member.status==='active').length} membros VIP ativos</span><div><button id="vipInviteSetup" class="mini-button">CONFIGURAR LINK DO GRUPO</button> <button id="newVipMember" class="mini-button primary">+ CADASTRAR VIP</button></div></div><section class="finance-panel"><h3>MEMBROS VIP</h3><div class="admin-filter-bar"><label>BUSCAR NOME, E-MAIL OU TELEFONE<input id="adminVipSearch" type="search" value="${htm(adminVipSearch)}" placeholder="Digite para filtrar"></label></div>${filteredVip.length?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>NOME</th><th>E-MAIL</th><th>WHATSAPP</th><th>ACESSO</th><th>CADASTRO</th><th>AÇÕES</th></tr></thead><tbody>${vipRows}</tbody></table></div>`:'<div class="empty-state">NENHUM MEMBRO VIP CORRESPONDE À BUSCA.</div>'}</section><section class="finance-panel"><h3>CONTAS CADASTRADAS</h3>${customerRows.length?table(['NOME','E-MAIL','WHATSAPP','OFERTAS','CADASTRO','AÇÕES'],customerRows):'<div class="empty-state">NENHUMA CONTA CADASTRADA. RESERVAS DE VISITANTES FICAM NA ABA PEDIDOS.</div>'}</section>`;
+  $('#adminContent').innerHTML=`<div class="section-kicker">CLIENTES / COMUNIDADE VIP</div><h2>CLIENTES E MEMBROS VIP</h2><p>Remover VIP desativa a associação sem apagar o cliente. Excluir a ficha do cliente também remove a associação VIP; pedidos e histórico financeiro permanecem.</p><div class="admin-toolbar"><span>${customers.length} contas · ${vipUsers.filter(member=>member.status==='active').length} membros VIP ativos</span><div><button id="vipInviteSetup" class="mini-button">CONFIGURAR LINK DO GRUPO</button> <button id="newVipMember" class="mini-button primary">+ CADASTRAR VIP</button></div></div><section class="finance-panel"><h3>MEMBROS VIP</h3><div class="admin-filter-bar"><label>BUSCAR NOME, E-MAIL OU TELEFONE<input id="adminVipSearch" type="search" value="${htm(adminVipSearch)}" placeholder="Digite para filtrar"></label></div>${filteredVip.length?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>NOME</th><th>E-MAIL</th><th>WHATSAPP</th><th>ACESSO</th><th>CADASTRO</th><th>AÇÕES</th></tr></thead><tbody>${vipRows}</tbody></table></div>`:'<div class="empty-state">NENHUM MEMBRO VIP CORRESPONDE À BUSCA.</div>'}</section><section class="finance-panel"><h3>CONTAS CADASTRADAS</h3>${customerRows.length?table(['NOME','E-MAIL','WHATSAPP','OFERTAS','CADASTRO','AÇÕES'],customerRows):'<div class="empty-state">NENHUMA CONTA CADASTRADA. RESERVAS DE VISITANTES FICAM NA ABA PEDIDOS.</div>'}</section>`;
   $('#adminVipSearch').oninput=event=>{adminVipSearch=event.target.value;renderAdminCustomers();const input=$('#adminVipSearch');input?.focus();input?.setSelectionRange(adminVipSearch.length,adminVipSearch.length);};
   $('#vipInviteSetup').onclick=configureVipInvite;
   $('#newVipMember').onclick=manualVipEditor;
@@ -915,8 +918,8 @@ async function deleteCustomerRecord(uid) {
   if(!isAdmin||!uid)return;
   const customer=customers.find(item=>(item.uid||item.id)===uid);
   const label=customer?.name||customer?.email||uid;
-  if(!confirm(`Excluir a ficha de ${label}? A conta Firebase, os pedidos e o histórico financeiro permanecerão. Esta ação não pode ser desfeita.`))return;
-  try{await deleteDoc(doc(db,'customers',uid));toast('Ficha do cliente excluída. Conta e pedidos foram preservados.');}
+  if(!confirm(`Excluir a ficha de ${label} e sua associação VIP, se houver? A conta de login, os pedidos e o histórico financeiro permanecerão. Esta ação não pode ser desfeita.`))return;
+  try{const batch=writeBatch(db);batch.delete(doc(db,'customers',uid));batch.delete(doc(db,'vipUsers',uid));await batch.commit();toast('Ficha do cliente e associação VIP excluídas. Conta de login e pedidos foram preservados.');}
   catch(error){console.error(error);toast(friendlyFirestoreError(error));}
 }
 
@@ -939,10 +942,10 @@ function manualVipEditor() {
 }
 
 async function updateVipMemberStatus(uid,status) {
-  if(!['active','blocked','removed'].includes(status))return;
+  if(!['active','removed'].includes(status))return;
   const member=vipUsers.find(item=>item.uid===uid);if(!member)return;
-  if(status==='removed'&&!confirm(`Remover ${member.name} da Comunidade VIP? A conta de cliente e os pedidos não serão apagados.`))return;
-  try{await updateDoc(doc(db,'vipUsers',uid),{status,updatedAt:serverTimestamp()});toast(status==='active'?'Membro VIP reativado.':status==='blocked'?'Acesso VIP bloqueado.':'Vínculo VIP removido; o cliente foi preservado.');}
+  if(status==='removed'&&!confirm(`Remover ${member.name} da Comunidade VIP? A ficha do cliente e os pedidos serão preservados.`))return;
+  try{await updateDoc(doc(db,'vipUsers',uid),{status,updatedAt:serverTimestamp()});toast(status==='active'?'Acesso VIP reativado.':'Acesso VIP removido.');}
   catch(error){console.error(error);toast(friendlyFirestoreError(error));}
 }
 
@@ -1042,7 +1045,7 @@ function offerEditor(kind) {
           <label>DESCONTO (%)<input name="value" type="number" min="1" max="99" step="1" value="10" required></label>`:
           `<label>TÍTULO DA CAMPANHA<input name="title" maxlength="120" placeholder="Ex.: Semana da Comunidade" required></label>
           <label>DESCRIÇÃO E CONDIÇÕES<textarea name="description" rows="5" maxlength="500" placeholder="Explique o período, as peças e as condições da campanha." required></textarea><small>Até 500 caracteres.</small></label>`}
-        <label>VISIBILIDADE<select name="status"><option value="draft">Salvar como rascunho</option><option value="published">Publicar agora para clientes VIP</option></select></label>
+        <label>VISIBILIDADE<select name="status">${coupon?'<option value="published">Publicar agora para clientes VIP</option><option value="draft">Salvar como rascunho</option>':'<option value="draft">Salvar como rascunho</option><option value="published">Publicar agora para clientes VIP</option>'}</select></label>
         <button class="pill-button dark" id="saveOffer">SALVAR ${coupon?'CUPOM':'CAMPANHA'} ↗</button>
       </form>
       <aside class="offer-preview-panel" aria-live="polite"><span class="section-kicker">PRÉVIA PARA CLIENTES VIP</span>
@@ -1078,7 +1081,7 @@ function offerEditor(kind) {
     save.disabled=true;save.textContent='SALVANDO…';
     try{
       if(coupon){
-        const normalized=String(code.value||'').trim().toUpperCase(), percentage=Number(value.value);
+        const normalized=normalizeCouponCode(code.value), percentage=Number(value.value);
         if(!/^[A-Z0-9_-]{3,30}$/.test(normalized)||!Number.isInteger(percentage)||percentage<1||percentage>99)throw new Error('Confira o código e o desconto de 1 a 99%.');
         const reference=doc(db,'coupons',normalized);
         if((await getDoc(reference)).exists())throw new Error('Já existe um cupom com esse código. Escolha outro.');
@@ -1089,7 +1092,7 @@ function offerEditor(kind) {
         const reference=doc(collection(db,'campaigns'));
         await setDoc(reference,{title:campaignName,description:campaignDescription,status,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
       }
-      closeModal();toast(`${coupon?'Cupom':'Campanha'} salva com sucesso.`);if(adminTab==='discounts')renderAdminContent();
+      closeModal();toast(status==='published'?`${coupon?'Cupom':'Campanha'} publicada para clientes VIP.`:`${coupon?'Cupom':'Campanha'} salva como rascunho. Publique no painel antes de usar no carrinho.`);if(adminTab==='discounts')renderAdminContent();
     }catch(error){console.error('Falha ao salvar benefício:',error);toast(friendlyFirestoreError(error));save.disabled=false;save.textContent=`SALVAR ${coupon?'CUPOM':'CAMPANHA'} ↗`;}
   };
   refresh();

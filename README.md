@@ -54,10 +54,11 @@ Uma mensagem automática pelo WhatsApp, sem clique do cliente, não pode ser env
 
 - `products` guarda catálogo e URLs do Cloudinary; `productCosts` mantém custo privado.
 - `orders` guarda solicitações e histórico; pedidos não são apagados. A área financeira permite resumir e exportar CSV antes de qualquer decisão de retenção.
-- `customers` mantém fichas de cliente; o administrador pode excluir uma ficha manualmente, sem apagar a conta Firebase nem os pedidos existentes.
+- `customers` mantém fichas de cliente; ao excluir uma ficha pelo painel, a associação em `vipUsers` também é removida no mesmo lote. A conta Firebase, os pedidos e o histórico financeiro permanecem.
 - `messages` é privada; o administrador pode excluir mensagens individuais. Não há limpeza automática por idade.
 - `reservationLimits` e `messageLimits` aplicam os intervalos por contato sem expor leitura pública.
-- `customers`, `coupons`, `campaigns`, `messages` e `settings/vip` continuam protegidos pelas regras administrativas e de associação VIP. A confirmação do e-mail libera o VIP automaticamente; a primeira sessão confirmada registra a associação em `vipUsers`. A equipe ainda pode bloquear ou remover o acesso explicitamente.
+- `customers`, `coupons`, `campaigns`, `messages` e `settings/vip` continuam protegidos pelas regras administrativas e de associação VIP. A confirmação do e-mail libera o VIP automaticamente para uma conta com ficha em `customers`; a primeira sessão confirmada registra a associação em `vipUsers`. No painel há uma única ação para remover ou reativar o VIP. A exclusão da ficha e da associação é atômica.
+- Cupons devem estar publicados para funcionarem no carrinho. O código é convertido para maiúsculas e espaços digitados são removidos antes da busca; por exemplo, `TESTE 01` corresponde ao código cadastrado como `TESTE01`.
 - O cliente recebe um aviso na tela após confirmar o e-mail e entrar novamente, e o link do grupo WhatsApp fica visível no painel da conta e na Comunidade. O envio de um segundo e-mail automático exigiria um provedor de e-mail transacional/backend que não está configurado na implantação estática gratuita.
 
 `functions/` e `cloudinary-worker/` contêm implementações de backend de versões anteriores. A configuração gratuita atual não as publica nem depende delas.
