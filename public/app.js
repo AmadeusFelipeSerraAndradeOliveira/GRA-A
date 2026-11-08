@@ -870,43 +870,8 @@ async function configureCloudinaryWorker() {
   openModal(`<div class="section-kicker">IMAGENS / CLOUDINARY</div><h2 id="modalTitle">CONFIGURAR O ENVIO DE FOTOS.</h2><ol><li>Abra Cloudinary Console → Settings → Upload presets.</li><li>Crie o preset <strong>${htm(CLOUDINARY_CONFIG.uploadPreset)}</strong> em modo <strong>Unsigned</strong>.</li><li>Limite os formatos a JPG, PNG e WebP, escolha a pasta <strong>graca/products</strong> e bloqueie IDs de arquivo definidos pelo navegador.</li><li>Salve o preset. Depois, reabra o painel e envie uma foto ou URL HTTPS.</li></ol><p class="fine-print">O preset é público e permite uploads à conta Cloudinary. Restrinja os formatos e a pasta, acompanhe o uso e gire o nome do preset se observar abuso. Nenhum segredo da conta é colocado no site.</p>`);
 }
 
-productEditor = async function(id='') {
-  const existing=products.find(item=>String(item.id)===String(id));
-  const p=existing||{name:'',category:'',price:'',discount:0,stock:0,sizes:['Único'],color:'pink',mark:'GRAÇA',description:'',featured:false,active:true,imageUrl:'',imagePublicId:''};
-  const savedCost=id?await getDoc(doc(db,'productCosts',String(id))).catch(()=>null):null;
-  const privateCost=savedCost?.exists()?savedCost.data().cost:productCosts.get(String(id))?.cost;
-  let imageUrl=isCloudinaryUrl(p.imageUrl)?p.imageUrl:'', imagePublicId=isCloudinaryPublicId(p.imagePublicId)?p.imagePublicId:'', previewUrl='';
-  openModal(`<div class="section-kicker">CATÁLOGO / ${id?'EDITAR':'NOVO'}</div><h2 id="modalTitle">${id?'EDITAR PRODUTO':'CADASTRAR PRODUTO'}.</h2>${p.seededExample?'<p class="seed-review-note">Este é um exemplo: confirme nome, preço, estoque e variações antes de publicar.</p>':''}<form id="productForm" class="modal-form"><label>NOME<input name="name" maxlength="160" required value="${htm(p.name)}"></label><label>CATEGORIA<input name="category" maxlength="80" required value="${htm(p.category)}"></label><div class="modal-grid"><label>PREÇO<input name="price" type="number" min="0.01" max="100000" step=".01" required value="${htm(p.price)}"></label><label>CUSTO (OPCIONAL)<input name="cost" type="number" min="0" step=".01" value="${htm(privateCost??'')}"></label></div><div class="modal-grid"><label>DESCONTO (%)<input name="discount" type="number" min="0" max="99" value="${htm(p.discount||0)}"></label><label>ESTOQUE<input name="stock" type="number" min="0" max="100000" step="1" required value="${htm(p.stock||0)}"></label></div><label>TAMANHOS / VARIAÇÕES (SEPARADOS POR VÍRGULA)<input name="sizes" required value="${htm((p.sizes||[]).join(', '))}"></label><label>DESCRIÇÃO<textarea name="description" maxlength="1200">${htm(p.description||'')}</textarea></label><label><input name="featured" type="checkbox" ${p.featured?'checked':''}> Exibir na curadoria em destaque</label><label><input name="active" type="checkbox" ${p.active!==false?'checked':''}> Publicado no catálogo</label><div class="upload-preview">${imageUrl?`<img id="productPhotoPreview" src="${htm(imageUrl)}" alt="Prévia da foto">`:'<div id="productPhotoPreview" class="empty-state">SEM FOTO</div>'}</div><label>ESCOLHER FOTO NO CELULAR OU COMPUTADOR<input id="photoFile" type="file" accept="image/jpeg,image/png,image/webp"></label><div class="admin-toolbar"><button id="uploadPhoto" class="mini-button" type="button">ENVIAR FOTO</button><button id="removePhoto" class="mini-button" type="button">REMOVER FOTO</button></div><p class="fine-print">Envio limitado a JPEG, PNG ou WebP até 5 MB. O segredo do Cloudinary fica somente no Worker.</p><button class="pill-button dark" id="saveProduct">SALVAR PRODUTO</button></form>`);
-  const fileInput=$('#photoFile'), uploadButton=$('#uploadPhoto'), saveButton=$('#saveProduct');
-  fileInput.onchange=()=>{const file=fileInput.files?.[0];if(!file)return;if(!['image/jpeg','image/png','image/webp'].includes(file.type)||file.size>5*1024*1024){fileInput.value='';return toast('Escolha JPEG, PNG ou WebP de até 5 MB.');}if(previewUrl)URL.revokeObjectURL(previewUrl);previewUrl=URL.createObjectURL(file);$('#productPhotoPreview').outerHTML=`<img id="productPhotoPreview" src="${previewUrl}" alt="Prévia da foto selecionada">`;};
-  $('#removePhoto').onclick=()=>{imageUrl='';imagePublicId='';if(previewUrl)URL.revokeObjectURL(previewUrl);$('#productPhotoPreview').outerHTML='<div id="productPhotoPreview" class="empty-state">SEM FOTO</div>';fileInput.value='';};
-  uploadButton.onclick=async()=>{
-    const file=fileInput.files?.[0];if(!file)return toast('Escolha uma foto primeiro.');
-    uploadButton.disabled=true;uploadButton.textContent='ENVIANDO…';
-    try{const uploaded=await uploadProductPhoto(file);imageUrl=uploaded.imageUrl;imagePublicId=uploaded.imagePublicId;$('#productPhotoPreview').outerHTML=`<img id="productPhotoPreview" src="${htm(imageUrl)}" alt="Prévia da foto enviada">`;toast('Foto enviada. Salve o produto para gravar a URL segura.');}
-    catch(error){console.error(error);toast(error.message||'Falha no upload da foto.');}
-    finally{uploadButton.disabled=false;uploadButton.textContent='ENVIAR FOTO';}
-  };
-  $('#productForm').onsubmit=async event=>{
-    event.preventDefault();const form=new FormData(event.currentTarget),name=String(form.get('name')).trim(),category=String(form.get('category')).trim(),price=Number(form.get('price')),stock=Number(form.get('stock')),sizes=String(form.get('sizes')).split(',').map(value=>value.trim()).filter(Boolean);
-    if(!name||!category||!Number.isFinite(price)||price<=0||!Number.isInteger(stock)||sizes.length<1||sizes.length>20)return toast('Confira nome, categoria, preço, estoque e variações.');
-    if(!isCloudinaryUrl(imageUrl)||!isCloudinaryPublicId(imagePublicId))return toast('Envie uma foto válida ao Cloudinary antes de salvar o produto.');
-    saveButton.disabled=true;saveButton.textContent='SALVANDO…';
-    try{
-      const ref=id?doc(db,'products',id):doc(collection(db,'products'));
-      const product={name,category,price,discount:Number(form.get('discount')||0),stock,sizes,description:String(form.get('description')||'').trim(),featured:form.get('featured')==='on',active:form.get('active')==='on',imageUrl,imagePublicId,color:p.color||'pink',mark:p.mark||'GRAÇA',updatedAt:serverTimestamp()};
-      const costValue=form.get('cost')===''?null:Number(form.get('cost'));
-      await runTransaction(db,async transaction=>{
-        transaction.set(ref,{...product,cost:deleteField()},{merge:true});
-        transaction.set(doc(db,'productCosts',ref.id),{cost:costValue,updatedAt:serverTimestamp()},{merge:true});
-      });
-      await saveCategory(category);closeModal();toast('Produto salvo. O custo foi separado no registro privado da equipe.');
-    }catch(error){console.error(error);toast(friendlyFirestoreError(error));saveButton.disabled=false;saveButton.textContent='SALVAR PRODUTO';}
-  };
-};
-
-// Product editor with a single 5-image gallery. Files and remote image links
-// are both sent through the authenticated Cloudinary Worker before saving.
+// Product editor with a five-image gallery. Browser uploads use the public
+// unsigned preset, so Cloudinary restrictions—not a client-side secret—guard uploads.
 productEditor = async function(id='') {
   const existing=products.find(item=>String(item.id)===String(id));
   const p=existing||{name:'',category:'',price:'',discount:0,stock:0,sizes:['Único'],color:'pink',mark:'GRAÇA',description:'',featured:false,active:true,imageUrl:'',imagePublicId:''};
