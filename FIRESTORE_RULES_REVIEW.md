@@ -9,7 +9,8 @@ As regras deste projeto são destinadas ao Firebase Standard/Native `graca-454ff
 - Reserva é criada como pedido pendente, com itens, preço e quantidade comparados ao catálogo atual. A criação precisa vir no mesmo lote de gravação que o limite por número de WhatsApp.
 - Mensagem de contato precisa vir no mesmo lote que o limite por e-mail. Esses dois limitadores não têm leitura nem listagem pública; uma sessão anônima diferente ainda encontra o tempo de espera quando reutiliza o mesmo contato.
 - Alterações administrativas de pedido preservam identidade, itens, total, endereço e histórico anterior. A baixa/restauração de estoque ocorre separadamente e só com conta administrativa.
-- Pedidos e cadastros de clientes não podem ser excluídos. VIP, cupons, campanhas, custos e mensagens privadas permanecem limitados à função administrativa ou ao respectivo membro VIP.
+- Pedidos e documentos de limite não podem ser excluídos. Administradores podem excluir individualmente uma ficha em `customers` ou uma mensagem; isso não exclui a conta Firebase nem pedidos que copiem os dados necessários ao histórico.
+- Não existe exclusão automática após 35 dias. O painel financeiro mantém resumo e exportação CSV; qualquer política de retenção deve ser revisada antes de apagar histórico.
 
 ## Limite de abusos sem servidor
 
