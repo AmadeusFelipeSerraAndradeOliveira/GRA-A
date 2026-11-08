@@ -15,12 +15,13 @@
 //   installmentCount, installmentValueCents, finalInstallmentValueCents, closedAt.
 //   Owner reads own; admins read and transition; no deletes.
 // customers/{uid}: UID/email/name/phone/address/marketingConsent and timestamps.
-//   Owner reads/updates own; admins read; email, UID and createdAt are immutable.
+//   Owner reads/updates own; admins read/delete profile documents; email, UID
+//   and createdAt are immutable. Deleting a profile does not delete Auth or orders.
 // admins/{uid}: authorization marker; no client writes.
 // coupons/{id}: code/value/status/timestamps. campaigns/{id}: title/description/
 //   status/timestamps. Verified non-anonymous members read published records.
 // messages/{id}: UID/name/email/subject/message/status/timestamps; private to admins
-//   after creation. settings/cloudinary stores only a public Worker URL and timestamp.
+//   after creation, with admin-only deletion. Cloudinary preset is public config.
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -33,6 +34,17 @@ service cloud.firestore {
         request.auth.token.admin == true
         || exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
+    }
+
+    function validCloudinaryImageUrl(value) {
+      return value is string && value.size() <= 2048
+        && value.matches('https://res\\.cloudinary\\.com/imc3dn7g/image/upload/.*');
+    }
+
+    function validCloudinaryPublicId(value) {
+      return value is string && value.size() > 0 && value.size() <= 255
+        && value.matches('^[A-Za-z0-9_-][A-Za-z0-9_/-]*$')
+        && !value.matches('.*//.*');
     }
 
     function validProduct(data) {
@@ -48,10 +60,8 @@ service cloud.firestore {
         && (!('discount' in data) || (data.discount is number && data.discount >= 0 && data.discount <= 99))
         && (!('description' in data) || (data.description is string && data.description.size() <= 1200))
         && (!('featured' in data) || data.featured is bool)
-        && data.imageUrl is string && data.imageUrl.size() <= 2048
-        && data.imageUrl.matches('https://res\\.cloudinary\\.com/[A-Za-z0-9_-]+/image/upload/.*')
-        && data.imagePublicId is string && data.imagePublicId.size() <= 255
-        && data.imagePublicId.matches('^graca/products/[A-Za-z0-9_-]{20,60}$')
+        && validCloudinaryImageUrl(data.imageUrl)
+        && validCloudinaryPublicId(data.imagePublicId)
         && validImageGallery(data)
         && (!('seededExample' in data) || data.seededExample is bool)
         && (!('color' in data) || (data.color is string && data.color.size() <= 40))
@@ -64,10 +74,8 @@ service cloud.firestore {
       return image is map
         && image.keys().hasAll(['imageUrl', 'imagePublicId'])
         && image.keys().hasOnly(['imageUrl', 'imagePublicId'])
-        && image.imageUrl is string && image.imageUrl.size() <= 2048
-        && image.imageUrl.matches('https://res\\.cloudinary\\.com/[A-Za-z0-9_-]+/image/upload/.*')
-        && image.imagePublicId is string
-        && image.imagePublicId.matches('^graca/products/[A-Za-z0-9_-]{20,60}$');
+        && validCloudinaryImageUrl(image.imageUrl)
+        && validCloudinaryPublicId(image.imagePublicId);
     }
 
     function validImageGallery(data) {
@@ -505,7 +513,7 @@ service cloud.firestore {
       allow update: if signedIn() && request.auth.uid == uid
         && validCustomerUpdate(request.resource.data, uid)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'phone', 'address', 'marketingConsent', 'updatedAt']);
-      allow delete: if false;
+      allow delete: if isAdmin();
     }
 
     match /products/{productId} {
@@ -613,7 +621,7 @@ service cloud.firestore {
         && request.resource.data.createdAt == resource.data.createdAt
         && request.resource.data.status in ['Nova', 'Em atendimento', 'Concluída']
         && request.resource.data.updatedAt is timestamp;
-      allow delete: if false;
+      allow delete: if isAdmin();
     }
 
     match /messageLimits/{uid} {
