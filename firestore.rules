@@ -19,7 +19,9 @@
 //   and createdAt are immutable. Deleting a profile does not delete Auth or orders.
 // admins/{uid}: authorization marker; no client writes.
 // coupons/{id}: code/value/status/timestamps. campaigns/{id}: title/description/
-//   status/timestamps. Verified non-anonymous members read published records.
+//   status/timestamps. Email-verified, non-anonymous accounts gain VIP access
+//   automatically; a verified user may create only their own active vipUsers
+//   record, while admins can explicitly block or remove access.
 // messages/{id}: UID/name/email/subject/message/status/timestamps; private to admins
 //   after creation, with admin-only deletion. Cloudinary preset is public config.
 rules_version = '2';
@@ -374,12 +376,21 @@ service cloud.firestore {
         && data.createdAt is timestamp && data.updatedAt is timestamp;
     }
 
+    function isVerifiedVipMember(uid) {
+      return signedIn()
+        && request.auth.uid == uid
+        && request.auth.token.email_verified == true
+        && request.auth.token.firebase.sign_in_provider != 'anonymous';
+    }
+
     function isActiveVip() {
+      // Verificação de e-mail libera o VIP automaticamente. Um documento
+      // administrativo pode bloquear ou remover o acesso de forma explícita.
       return signedIn()
         && request.auth.token.email_verified == true
         && request.auth.token.firebase.sign_in_provider != 'anonymous'
-        && exists(/databases/$(database)/documents/vipUsers/$(request.auth.uid))
-        && get(/databases/$(database)/documents/vipUsers/$(request.auth.uid)).data.status == 'active';
+        && (!exists(/databases/$(database)/documents/vipUsers/$(request.auth.uid))
+          || get(/databases/$(database)/documents/vipUsers/$(request.auth.uid)).data.status == 'active');
     }
 
     function validVipSetting(data) {
@@ -666,9 +677,14 @@ service cloud.firestore {
     match /vipUsers/{uid} {
       allow get: if isAdmin() || (signedIn() && request.auth.uid == uid);
       allow list: if isAdmin();
-      // VIP access is granted only by an authorized administrator. A verified
-      // account alone must never be able to grant itself access to the group.
-      allow create: if isAdmin() && validVipMember(request.resource.data, uid);
+      // A confirmed e-mail can create its own active membership record. Admins
+      // retain the ability to manage explicit blocks and manual records.
+      allow create: if validVipMember(request.resource.data, uid)
+        && (isAdmin()
+          || (isVerifiedVipMember(uid)
+            && request.resource.data.status == 'active'
+            && request.resource.data.createdAt == request.time
+            && request.resource.data.updatedAt == request.time));
       allow update: if isAdmin()
         && validVipMember(request.resource.data, uid)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])

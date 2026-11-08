@@ -6,6 +6,7 @@ import {
   signInAnonymously,
   sendEmailVerification,
   sendPasswordResetEmail,
+  reload,
   signInWithEmailAndPassword,
   signOut,
   updateProfile
@@ -134,15 +135,37 @@ function accountModal(mode='login',notice=''){
  const signup=mode==='signup';
  openModal('<div class="section-kicker">MY GRAÇA</div><h2 id="modalTitle">'+(signup?'CADASTRO OPCIONAL':'ENTRE NA SUA CONTA')+'</h2>'+(signup?'<p>Você pode reservar sem criar conta. A Comunidade VIP oferece acesso a cupons, descontos, campanhas e novidades quando a GRAÇA os publicar.</p><p>Use uma senha com pelo menos 12 caracteres. Vamos enviar um link para confirmar seu e-mail.</p><form class="modal-form" id="signupForm"><label>NOME<input name="name" autocomplete="name" required></label><label>E-MAIL<input name="email" type="email" autocomplete="email" required></label><label>WHATSAPP<input name="phone" autocomplete="tel" required></label><label>SENHA<input name="password" type="password" autocomplete="new-password" minlength="12" required></label><label class="consent-row"><input name="marketingConsent" type="checkbox"> Aceito receber novidades e ofertas por e-mail ou WhatsApp. Opcional; posso mudar de ideia depois.</label><button class="pill-button dark">CRIAR CONTA VIP ↗</button></form><button id="toLogin" class="text-button">JÁ TENHO UMA CONTA</button>':'<p>'+htm(notice||'Informe seu e-mail e sua senha cadastrados.')+'</p><form class="modal-form" id="loginForm"><label>E-MAIL<input name="email" type="email" autocomplete="username" required></label><label>SENHA<input name="password" type="password" autocomplete="current-password" required></label><button class="pill-button dark">ENTRAR ↗</button></form><button id="resetPassword" class="text-button">ESQUECI MINHA SENHA</button><p class="fine-print">A senha é validada pelo Firebase Authentication.</p><button id="toSignup" class="text-button">CRIAR CONTA VIP — OPCIONAL</button>'));
  if(signup){
-  $('#signupForm').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target),email=String(f.get('email')).trim().toLowerCase(),name=String(f.get('name')).trim();try{const credential=await createUserWithEmailAndPassword(auth,email,String(f.get('password')));await updateProfile(credential.user,{displayName:name});await sendEmailVerification(credential.user);const profile={id:credential.user.uid,uid:credential.user.uid,name,email,phone:String(f.get('phone')).trim(),marketingConsent:f.get('marketingConsent')==='on',vip:false,emailVerified:false,created:new Date().toISOString(),address:{}};await saveCustomerProfile(profile);currentUser=null;memberNav();registrationWelcome()}catch(error){toast(authError(error))}};
+   $('#signupForm').onsubmit=async e=>{
+    e.preventDefault();const f=new FormData(e.target),email=String(f.get('email')).trim().toLowerCase(),name=String(f.get('name')).trim();
+    try{
+     const credential=await createUserWithEmailAndPassword(auth,email,String(f.get('password')));
+     await updateProfile(credential.user,{displayName:name});
+     await sendEmailVerification(credential.user);
+     const profile={id:credential.user.uid,uid:credential.user.uid,name,email,phone:String(f.get('phone')).trim(),marketingConsent:f.get('marketingConsent')==='on',vip:false,emailVerified:false,created:new Date().toISOString(),address:{}};
+     await saveCustomerProfile(profile);currentUser=null;memberNav();registrationWelcome();
+    }catch(error){toast(authError(error))}
+   };
   $('#toLogin').onclick=()=>accountModal('login');
  }else{
-  $('#loginForm').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target),email=String(f.get('email')).trim().toLowerCase();try{const credential=await signInWithEmailAndPassword(auth,email,String(f.get('password')));if(!credential.user.emailVerified){await sendEmailVerification(credential.user);await signOut(auth);currentUser=null;memberNav();return registrationWelcome(true)}currentUser=profileFor(credential.user);saveCustomerProfile(currentUser);memberNav();const action=pendingMemberAction;pendingMemberAction='';closeModal();if(action==='checkout'){openCart();checkout()}else if(action==='comment')toast('Agora você pode comentar em GRAÇA É ENCONTRO.');else clientMenu()}catch(error){toast(authError(error))}};
+   $('#loginForm').onsubmit=async e=>{
+    e.preventDefault();const f=new FormData(e.target),email=String(f.get('email')).trim().toLowerCase();
+    try{
+     const credential=await signInWithEmailAndPassword(auth,email,String(f.get('password')));
+     await reload(credential.user);
+     if(!credential.user.emailVerified){await sendEmailVerification(credential.user);await signOut(auth);currentUser=null;memberNav();return registrationWelcome(true)}
+     await credential.user.getIdToken(true);
+     currentUser=profileFor(credential.user);saveCustomerProfile(currentUser);memberNav();
+     const action=pendingMemberAction;pendingMemberAction='';closeModal();
+     if(action==='checkout'){openCart();checkout()}
+     else if(action==='comment')toast('Agora você pode comentar em GRAÇA É ENCONTRO.');
+     else clientMenu();
+    }catch(error){toast(authError(error))}
+   };
   $('#resetPassword').onclick=async()=>{const email=$('#loginForm [name="email"]').value.trim();if(!email)return toast('Informe seu e-mail para receber o link de recuperação.');try{await sendPasswordResetEmail(auth,email);toast('Enviamos um link seguro para redefinir sua senha.')}catch(error){toast(authError(error))}};
   $('#toSignup').onclick=()=>accountModal('signup');
  }
 }
-function registrationWelcome(resent=false){openModal('<div class="section-kicker">CONFIRME SEU E-MAIL</div><h2 id="modalTitle">QUASE LÁ.</h2><p>'+(resent?'Sua conta ainda não foi confirmada. Reenviamos o link de verificação.':'Enviamos um link de verificação para seu e-mail. Confirme o endereço e entre novamente para acessar sua conta e a área VIP.')+'</p><p class="fine-print">A conta só libera recursos de cliente depois da confirmação.</p><button class="pill-button dark" id="backToLogin">VOLTAR AO LOGIN</button>');$('#backToLogin').onclick=()=>accountModal('login')}
+function registrationWelcome(resent=false){openModal('<div class="section-kicker">CONFIRME SEU E-MAIL</div><h2 id="modalTitle">QUASE LÁ.</h2><p>'+(resent?'Sua conta ainda não foi confirmada. Reenviamos o link de verificação.':'Enviamos o link de verificação para seu e-mail. Assim que confirmar, volte ao site e entre novamente. A confirmação libera automaticamente a Comunidade VIP.')+'</p><p class="fine-print">Depois da confirmação, você verá o aviso de acesso liberado e o link do grupo no painel da sua conta.</p><button class="pill-button dark" id="backToLogin">VOLTAR AO LOGIN</button>');$('#backToLogin').onclick=()=>accountModal('login')}
 function memberNav(){const b=$('#accountBtn'),menu=$('#clientMenuBtn');if(!b||!menu)return;b.textContent=currentUser&&currentUser.emailVerified?'OI, '+currentUser.name.split(' ')[0].toUpperCase():'ENTRAR';menu.hidden=!(currentUser&&currentUser.emailVerified)}
 function clientMenu(){
  if(!currentUser)return accountModal('login');
@@ -423,9 +446,7 @@ profileFor = function(user) {
   const saved = customers.find(c => c.uid === user.uid) || {};
   const label = user.displayName || saved.name || (user.email ? user.email.split('@')[0] : 'Visitante');
   return { ...saved, id:user.uid, uid:user.uid, name:label, email:user.email || '', phone:saved.phone || '',
-    // A verified email is not itself a VIP entitlement. Membership is granted
-    // separately by the admin panel and read from vipUsers/{uid}.
-    vip:false, emailVerified:Boolean(user.emailVerified), isAnonymous:Boolean(user.isAnonymous),
+    vip:Boolean(user.emailVerified&&!user.isAnonymous), emailVerified:Boolean(user.emailVerified), isAnonymous:Boolean(user.isAnonymous),
     marketingConsent:Boolean(saved.marketingConsent), address:saved.address || {}, created:saved.createdAt || new Date() };
 };
 
@@ -444,8 +465,31 @@ saveCustomerProfile = async function(profile) {
 
 async function getVipMembership(user) {
   if(!user?.uid||user.isAnonymous||!user.emailVerified||!user.email)return null;
-  const snapshot=await getDoc(doc(db,'vipUsers',user.uid));
-  return snapshot.exists()?snapshot.data():null;
+  const reference=doc(db,'vipUsers',user.uid);
+  let snapshot=await getDoc(reference);
+  if(snapshot.exists())return {...snapshot.data(),id:user.uid};
+  const saved=customers.find(customer=>customer.uid===user.uid)||{};
+  const member={uid:user.uid,name:String(user.displayName||saved.name||user.email.split('@')[0]).trim().slice(0,120),email:String(user.email).slice(0,254),phone:String(saved.phone||'').slice(0,40),status:'active',createdAt:serverTimestamp(),updatedAt:serverTimestamp()};
+  try{
+    await setDoc(reference,member);
+    return {...member,id:user.uid,createdAt:new Date(),updatedAt:new Date()};
+  }catch(error){
+    snapshot=await getDoc(reference).catch(()=>null);
+    if(snapshot?.exists())return {...snapshot.data(),id:user.uid};
+    throw error;
+  }
+}
+
+async function getVipInviteUrl() {
+  const setting=await getDoc(doc(db,'settings','vip'));
+  return setting.exists()?String(setting.data().inviteUrl||''):'';
+}
+
+function announceVipAccess(user) {
+  if(!user?.uid)return;
+  const key=`graca_vip_welcome_seen_${user.uid}`;
+  try{if(localStorage.getItem(key)==='1')return;localStorage.setItem(key,'1');}catch{}
+  toast('Seu acesso à Comunidade VIP foi liberado!');
 }
 
 async function refreshVipAccessNotice(user) {
@@ -453,13 +497,12 @@ async function refreshVipAccessNotice(user) {
   notice.hidden=true;
   if(!user?.emailVerified||user.isAnonymous)return;
   try{
-    const member=await getDoc(doc(db,'vipUsers',user.uid));
-    if(!member.exists()||member.data().status!=='active')return;
-    const setting=await getDoc(doc(db,'settings','vip'));
-    const link=setting.exists()?String(setting.data().inviteUrl||''):'';
+    const member=await getVipMembership(user);
+    if(member?.status!=='active')return;
+    const link=await getVipInviteUrl();
     vipInviteUrl=link;
     notice.hidden=false;
-    notice.innerHTML=`<strong>Seu acesso ao grupo GRAÇA VIP está liberado.</strong><p>Benefícios: cupons publicados, campanhas e novidades exclusivas da comunidade.</p>${link?`<a class="mini-button" href="${htm(link)}" target="_blank" rel="noopener">ENTRAR NO GRUPO VIP ↗</a>`:'<span>O convite está sendo preparado pela equipe.</span>'}`;
+    notice.innerHTML=`<strong>Seu acesso à Comunidade VIP foi liberado!</strong><p>Você já pode acessar cupons, campanhas, novidades e o grupo exclusivo da GRAÇA.</p>${link?`<a class="mini-button" href="${htm(link)}" target="_blank" rel="noopener">ENTRAR NO GRUPO VIP ↗</a>`:'<span>O link do grupo está sendo preparado pela equipe.</span>'}`;
   }catch(error){console.warn('O aviso de acesso VIP ainda não está disponível:',error);}
 }
 
@@ -607,10 +650,16 @@ trackOrder = function() {
 
 orderHistory = function() { trackOrder(); };
 vipForm = function() { accountModal('signup'); };
-clientMenu = function() {
+clientMenu = async function() {
   const user=auth.currentUser;
   if(!user||user.isAnonymous||!user.emailVerified)return accountModal('login');
-  openModal('<div class="section-kicker">MY GRAÇA</div><h2 id="modalTitle">MINHA CONTA</h2><div class="client-menu-list"><button data-member="vip">COMUNIDADE VIP</button><button data-member="orders">STATUS DO PEDIDO</button><button data-member="profile">PERFIL</button><button data-member="logout">SAIR</button></div>');
+  let member=null,inviteUrl='';
+  try{member=await getVipMembership(user);if(member?.status==='active')inviteUrl=await getVipInviteUrl();}
+  catch(error){console.warn('Não foi possível carregar o link VIP para o painel:',error);}
+  const vipCard=member?.status==='active'
+    ? `<section class="vip-dashboard-card"><strong>Seu acesso à Comunidade VIP está liberado.</strong><p>Cupons, campanhas, novidades e o grupo exclusivo da GRAÇA.</p>${inviteUrl?`<a class="mini-button primary" href="${htm(inviteUrl)}" target="_blank" rel="noopener">ABRIR GRUPO NO WHATSAPP ↗</a>`:'<span class="fine-print">O link do grupo está sendo preparado.</span>'}</section>`
+    : '<section class="vip-dashboard-card"><strong>Acesso VIP pausado.</strong><p>Fale com a equipe da GRAÇA para conferir sua conta.</p></section>';
+  openModal(`<div class="section-kicker">MY GRAÇA</div><h2 id="modalTitle">MINHA CONTA</h2>${vipCard}<div class="client-menu-list"><button data-member="vip">VER BENEFÍCIOS VIP</button><button data-member="orders">STATUS DO PEDIDO</button><button data-member="profile">PERFIL</button><button data-member="logout">SAIR</button></div>`);
   $$('[data-member]').forEach(button=>button.onclick=async()=>{const action=button.dataset.member;if(action==='vip')vipPage();if(action==='orders')orderHistory();if(action==='profile')profileEditor();if(action==='logout'){await signOut(auth);currentUser=null;isAdmin=false;memberNav();closeModal();}});
 };
 vipPage = async function() {
@@ -621,9 +670,8 @@ vipPage = async function() {
     const member=await getVipMembership(user);
     if(!$('#vipOffers'))return;
     if(member?.status!=='active'){$('#vipMembershipState').innerHTML='<strong>Seu acesso à Comunidade VIP está pausado.</strong><p>Fale com a equipe da GRAÇA para conferir o cadastro.</p>';$('#vipOffers').innerHTML='';return;}
-    const setting=await getDoc(doc(db,'settings','vip')).catch(()=>null);
-    vipInviteUrl=setting?.exists()?String(setting.data().inviteUrl||''):'';
-    $('#vipMembershipState').innerHTML=`<strong>Seu acesso ao grupo GRAÇA VIP está liberado.</strong><p>Benefícios: cupons publicados, campanhas e novidades exclusivas.</p>${vipInviteUrl?`<a class="pill-button dark" href="${htm(vipInviteUrl)}" target="_blank" rel="noopener">ENTRAR NO GRUPO VIP ↗</a>`:'<span>A equipe ainda precisa configurar o link do grupo.</span>'}`;
+    vipInviteUrl=await getVipInviteUrl().catch(()=> '');
+    $('#vipMembershipState').innerHTML=`<strong>Seu acesso à Comunidade VIP está liberado.</strong><p>Cupons publicados, campanhas, novidades e acesso ao grupo da GRAÇA.</p>${vipInviteUrl?`<a class="pill-button dark" href="${htm(vipInviteUrl)}" target="_blank" rel="noopener">ENTRAR NO GRUPO VIP ↗</a>`:'<span>O link do grupo está sendo preparado pela equipe.</span>'}`;
     const renderOffers=()=>{
       const box=$('#vipOffers');if(!box)return;
       const offers=[...vipCouponData.map(offer=>({...offer,kind:'Cupom'})),...vipCampaignData.map(offer=>({...offer,kind:'Campanha'}))];
@@ -1215,18 +1263,54 @@ renderAdminContent = function() {
   return renderAdminOverview(el);
 };
 
-onAuthStateChanged(auth,async user=>{
+async function activateVerifiedAccount(user,{notify=true}={}) {
+  if(!user?.emailVerified||user.isAnonymous)return null;
+  try{const saved=await getDoc(doc(db,'customers',user.uid));if(saved.exists())customers=[...customers.filter(customer=>customer.uid!==user.uid),{...saved.data(),id:user.uid,uid:user.uid}];}
+  catch(error){console.warn('Perfil opcional não carregado:',error);}
+  currentUser=profileFor(user);isAdmin=await hasAdminAccess(user);
+  try{
+    const membership=await getVipMembership(user);
+    currentUser.vip=membership?.status==='active';
+    if(currentUser.vip&&notify)announceVipAccess(user);
+  }catch(error){console.warn('O status VIP ainda não está disponível:',error);currentUser.vip=false;}
+  memberNav();await refreshVipAccessNotice(user);
+  return currentUser;
+}
+
+onAuthStateChanged(auth,async incomingUser=>{
   appliedCartCoupon=null;
-  if(user?.emailVerified&&!user.isAnonymous){
-    try{const saved=await getDoc(doc(db,'customers',user.uid));if(saved.exists())customers=[{...saved.data(),id:user.uid,uid:user.uid}];}catch(error){console.warn('Perfil opcional não carregado:',error);}
-    currentUser=profileFor(user);isAdmin=await hasAdminAccess(user);
-    try{const membership=await getVipMembership(user);currentUser.vip=membership?.status==='active';}catch(error){console.warn('O status VIP ainda não está disponível:',error);}
+  let user=incomingUser;
+  if(user&&!user.isAnonymous){
+    try{await reload(user);await user.getIdToken(true);}
+    catch(error){console.warn('Não foi possível atualizar o estado de verificação do e-mail:',error);}
+    if(auth.currentUser?.uid===user.uid)user=auth.currentUser;
   }
+  if(user?.emailVerified&&!user.isAnonymous)await activateVerifiedAccount(user);
   else if(user?.isAnonymous){currentUser=profileFor(user);isAdmin=false;}
   else {currentUser=null;isAdmin=false;}
   memberNav();void refreshVipAccessNotice(user);updateCatalogSubscriptions();subscribeUserData(user);renderCart();
   if(user?.emailVerified&&!user.isAnonymous&&cartCoupon)void applyCartCoupon(cartCoupon);
 });
+
+let refreshingVerificationOnReturn=false;
+async function refreshVerificationOnReturn() {
+  const user=auth.currentUser;
+  if(!user||user.isAnonymous||refreshingVerificationOnReturn)return;
+  refreshingVerificationOnReturn=true;
+  try{
+    const wasVerified=Boolean(currentUser?.emailVerified);
+    await reload(user);
+    if(user.emailVerified&&!wasVerified){
+      await user.getIdToken(true);
+      await activateVerifiedAccount(user);
+      updateCatalogSubscriptions();subscribeUserData(user);renderCart();
+      if(cartCoupon)void applyCartCoupon(cartCoupon);
+    }
+  }catch(error){console.warn('Não foi possível atualizar a verificação após retornar ao site:',error);}
+  finally{refreshingVerificationOnReturn=false;}
+}
+window.addEventListener('focus',()=>void refreshVerificationOnReturn());
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)void refreshVerificationOnReturn();});
 
 $('#accountBtn').onclick=()=>currentUser&&!currentUser.isAnonymous?clientMenu():accountModal('login');
 $('#clientMenuBtn').onclick=()=>clientMenu();

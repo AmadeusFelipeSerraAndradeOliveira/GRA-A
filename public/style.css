@@ -343,6 +343,10 @@
 .admin-comment-card cite{font:9px var(--mono);font-style:normal;opacity:.65}
 .admin-comment-card .mini-button{white-space:nowrap}
 .comment-source-label{display:inline-block;font:8px var(--mono);letter-spacing:.08em;padding:5px 7px;background:var(--yellow)}
+.vip-dashboard-card{margin:18px 0;padding:18px 20px;border:1px solid var(--ink);background:#e8ebde;box-shadow:5px 5px 0 var(--green)}
+.vip-dashboard-card p{margin:8px 0 14px;line-height:1.5}
+.vip-dashboard-card .mini-button{display:inline-flex;align-items:center;gap:8px}
+.vip-dashboard-card .fine-print{display:block}
 @media(max-width:850px){
   .hero.page-section{background-image:linear-gradient(180deg,rgba(240,241,230,.97) 0%,rgba(240,241,230,.83) 43%,rgba(240,241,230,.34) 100%),url("https://res.cloudinary.com/imc3dn7g/image/upload/f_auto,q_auto,w_1400/v1794144019/graca/brand/hero-editorial-heart-look.jpg")!important;background-position:center,right center}
   .art-frame{height:clamp(310px,60vw,430px)}

@@ -57,7 +57,8 @@ Uma mensagem automática pelo WhatsApp, sem clique do cliente, não pode ser env
 - `customers` mantém fichas de cliente; o administrador pode excluir uma ficha manualmente, sem apagar a conta Firebase nem os pedidos existentes.
 - `messages` é privada; o administrador pode excluir mensagens individuais. Não há limpeza automática por idade.
 - `reservationLimits` e `messageLimits` aplicam os intervalos por contato sem expor leitura pública.
-- `customers`, `vipUsers`, `coupons`, `campaigns`, `messages` e `settings/vip` continuam protegidos pelas regras administrativas e de associação VIP.
+- `customers`, `coupons`, `campaigns`, `messages` e `settings/vip` continuam protegidos pelas regras administrativas e de associação VIP. A confirmação do e-mail libera o VIP automaticamente; a primeira sessão confirmada registra a associação em `vipUsers`. A equipe ainda pode bloquear ou remover o acesso explicitamente.
+- O cliente recebe um aviso na tela após confirmar o e-mail e entrar novamente, e o link do grupo WhatsApp fica visível no painel da conta e na Comunidade. O envio de um segundo e-mail automático exigiria um provedor de e-mail transacional/backend que não está configurado na implantação estática gratuita.
 
 `functions/` e `cloudinary-worker/` contêm implementações de backend de versões anteriores. A configuração gratuita atual não as publica nem depende delas.
 
