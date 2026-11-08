@@ -29,7 +29,7 @@ Como o plano Spark não executa código servidor, não há bloqueio confiável p
 
 O painel envia arquivos JPEG, PNG e WebP de até 5 MB, ou busca um link de imagem HTTPS, diretamente à API de upload do Cloudinary. O produto grava `secure_url` e `public_id` devolvidos pelo serviço. Não há segredo de API no código do site.
 
-Para habilitar o envio, crie no Cloudinary Console um upload preset chamado `graca_products_unsigned_v1` com **Unsigned**, formatos `jpg`, `png`, `webp`, pasta `graca/products` e IDs definidos pelo sistema. O `public_id` devolvido precisa começar com `graca/products/`; em ambientes de pastas dinâmicas, configure também o prefixo do Public ID — a pasta visual, sozinha, pode não alterar esse identificador. O preset unsigned é público; restrinja formatos e pasta, impeça IDs definidos pelo cliente, acompanhe o uso e desative/rotacione o preset se detectar abuso. A checagem de administrador na interface não substitui autenticação no serviço de upload.
+Para habilitar o envio, crie no Cloudinary Console um upload preset chamado `graca_products_unsigned_v1` com **Unsigned / Não assinado**, formatos `jpg`, `png`, `webp`, pasta de ativos `graca/products`, sem sobrescrita e com ID público gerado automaticamente. A pasta de ativos organiza a Biblioteca de Mídia e não precisa aparecer no `public_id`; o site valida o Cloud Name e salva o ID retornado pelo Cloudinary. O preset unsigned é público; restrinja formatos e pasta, impeça IDs definidos pelo cliente, acompanhe o uso e desative/rotacione o preset se detectar abuso. A checagem de administrador na interface não substitui autenticação no serviço de upload.
 
 Depois de criar o preset, abra **Produtos → Configurar upload** no painel para ver as opções, selecione arquivos ou cole URLs HTTPS e importe. URLs privadas, com login ou que bloqueiam buscas automatizadas podem ser recusadas pelo Cloudinary.
 
@@ -53,7 +53,9 @@ Uma mensagem automática pelo WhatsApp, sem clique do cliente, não pode ser env
 ## Dados principais
 
 - `products` guarda catálogo e URLs do Cloudinary; `productCosts` mantém custo privado.
-- `orders` guarda solicitações e histórico; pedidos não podem ser apagados pelo cliente nem pelo painel.
+- `orders` guarda solicitações e histórico; pedidos não são apagados. A área financeira permite resumir e exportar CSV antes de qualquer decisão de retenção.
+- `customers` mantém fichas de cliente; o administrador pode excluir uma ficha manualmente, sem apagar a conta Firebase nem os pedidos existentes.
+- `messages` é privada; o administrador pode excluir mensagens individuais. Não há limpeza automática por idade.
 - `reservationLimits` e `messageLimits` aplicam os intervalos por contato sem expor leitura pública.
 - `customers`, `vipUsers`, `coupons`, `campaigns`, `messages` e `settings/vip` continuam protegidos pelas regras administrativas e de associação VIP.
 
