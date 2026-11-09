@@ -385,3 +385,23 @@
   .hero-slogan span{min-height:28px;padding:6px 9px;box-shadow:2px 2px 0 var(--ink)}
 }
 
+/* Barra clara e logo centralizada no celular, mesmo quando o aparelho usa tema escuro. */
+:root{color-scheme:light;color-scheme:only light}
+html{color-scheme:light;color-scheme:only light}
+body{background-color:var(--paper);color:var(--ink)}
+.announcement{background:#fff;color:var(--ink)}
+.site-header{background:rgba(255,255,255,.98);color:var(--ink);border-bottom-color:rgba(17,18,14,.14)}
+.wordmark img{display:block;width:120px;height:72px;object-fit:contain;mix-blend-mode:normal}
+@media(max-width:850px){
+  .site-header{position:sticky;background:rgba(255,255,255,.98)}
+  .wordmark{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:1;line-height:0}
+  .wordmark img{width:68px;height:54px}
+  .menu-toggle,.header-actions{position:relative;z-index:2}
+  .main-nav{background:#fff}
+}
+@media(max-width:380px){
+  .wordmark img{width:60px;height:48px}
+  .header-actions{gap:1px}
+  .bag-button{padding:7px 6px;font-size:8px}
+}
+

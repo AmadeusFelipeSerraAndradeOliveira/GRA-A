@@ -5,7 +5,7 @@ const { spawnSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const publicDir = path.join(root, 'public');
 const sourceFiles = ['app.js', 'firebase.js', 'catalog-seed.js', 'cloudinary-config.js', 'dev-server.js', 'scripts/reservation-emulator-smoke.cjs'];
-const hostingFiles = ['index.html', 'style.css', 'app.js', 'firebase.js', 'catalog-seed.js', 'cloudinary-config.js', 'assets/graca-editorial-background.jfif'];
+const hostingFiles = ['index.html', 'style.css', 'app.js', 'firebase.js', 'catalog-seed.js', 'cloudinary-config.js', 'assets/graca-editorial-background.jfif', 'assets/graca-logo-transparent.png'];
 const failed = [];
 const fail = message => failed.push(message);
 const ok = message => process.stdout.write(`OK ${message}.\n`);
