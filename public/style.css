@@ -372,3 +372,16 @@
   .admin-comment-card{grid-template-columns:1fr;gap:10px}
 }
 
+/* Assinatura da marca em destaque na abertura do site. */
+.hero-copy .eyebrow{margin:0 0 12px}
+.hero-slogan{display:flex;flex-wrap:wrap;align-items:center;gap:8px;width:fit-content;max-width:100%;margin:0 0 2px;font:800 clamp(11px,1.1vw,14px)/1.1 var(--sans);letter-spacing:.045em;text-transform:uppercase}
+.hero-slogan span{display:inline-flex;align-items:center;min-height:31px;padding:7px 11px;border:1px solid var(--ink);border-radius:999px;box-shadow:3px 3px 0 var(--ink)}
+.hero-slogan .slogan-people{background:var(--green);transform:rotate(-2deg)}
+.hero-slogan .slogan-fashion{background:var(--pink);transform:rotate(1.5deg)}
+.hero-slogan .slogan-community{background:var(--yellow);transform:rotate(-1deg)}
+@media(max-width:600px){
+  .hero-copy .eyebrow{margin-bottom:10px}
+  .hero-slogan{gap:7px;font-size:10px}
+  .hero-slogan span{min-height:28px;padding:6px 9px;box-shadow:2px 2px 0 var(--ink)}
+}
+
