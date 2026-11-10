@@ -10,4 +10,4 @@ ALLOWED_ORIGINS = "https://graca-454ff.web.app,https://graca-454ff.firebaseapp.c
 
 [[kv_namespaces]]
 binding = "PUSH_STATE"
-id = "CRIE_E_COLE_O_ID_DO_NAMESPACE_KV"
+id = "e1a4592435694dd9a320672efba27339"
