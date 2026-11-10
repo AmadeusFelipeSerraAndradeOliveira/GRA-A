@@ -216,6 +216,7 @@ let migratingLegacyProductCosts = false;
 let adminProductSearch = '';
 let adminVipSearch = '';
 let financeBaselineAt = null;
+let pendingSiteReset = null;
 let vipUsers = [];
 let vipInviteUrl = '';
 let appliedCartCoupon = null;
@@ -265,6 +266,19 @@ const normalizeOrder = (id,data) => ({
   createdAt:data.createdAt||data.created||new Date()
 });
 const activeProducts = () => products.filter(p => p.active !== false);
+function stockForSize(product,size) {
+  const stockBySize=product?.stockBySize;
+  if(stockBySize&&typeof stockBySize==='object'&&!Array.isArray(stockBySize))return Math.max(0,Math.floor(Number(stockBySize[size])||0));
+  const sizes=Array.isArray(product?.sizes)&&product.sizes.length?product.sizes:['Único'];
+  // Older records only have one total. Keep that stock on the first variation
+  // until an administrator assigns the actual quantities in the product form.
+  return String(size)===String(sizes[0])?Math.max(0,Math.floor(Number(product?.stock)||0)):0;
+}
+function totalProductStock(product) {
+  const stockBySize=product?.stockBySize;
+  if(stockBySize&&typeof stockBySize==='object'&&!Array.isArray(stockBySize))return Object.values(stockBySize).reduce((sum,value)=>sum+Math.max(0,Math.floor(Number(value)||0)),0);
+  return Math.max(0,Math.floor(Number(product?.stock)||0));
+}
 const friendlyFirestoreError = error => {
   if (error?.code === 'permission-denied') return 'O Firebase bloqueou a operação. Confira as regras publicadas e a autorização da conta.';
   if (error?.code === 'unavailable' || !navigator.onLine) return 'Sem conexão com o Firebase. Tente novamente quando a internet voltar.';
@@ -579,17 +593,19 @@ renderProducts = function() {
   const productGrid=$('#productGrid'), categoryFilter=$('#categoryFilter'), featuredProducts=$('#featuredProducts');
   if(!productGrid&&!categoryFilter&&!featuredProducts)return;
   const term = ($('#searchInput')?.value || '').trim().toLowerCase();
-  const cat = $('#categoryFilter')?.value || 'Todas';
+  let cat = $('#categoryFilter')?.value || 'Todas';
   const sort = $('#sortFilter')?.value || 'featured';
-  let list = activeProducts().filter(p => (cat === 'Todas' || p.category === cat) && (`${p.name||''} ${p.description||''} ${p.category||''}`).toLowerCase().includes(term));
+  const categoriesList = ['Todas', ...new Set(activeProducts().map(p => String(p.category||'').trim()).filter(Boolean))].sort((a,b)=>a==='Todas'?-1:b==='Todas'?1:a.localeCompare(b,'pt-BR'));
+  if(!categoriesList.includes(cat))cat='Todas';
+  let list = activeProducts().filter(p => (cat === 'Todas' || String(p.category||'').trim() === cat) && (`${p.name||''} ${p.description||''} ${p.category||''}`).toLowerCase().includes(term));
   if (sort === 'price-asc') list.sort((a,b) => productCents(a)-productCents(b));
   if (sort === 'price-desc') list.sort((a,b) => productCents(b)-productCents(a));
   if (sort === 'name') list.sort((a,b) => String(a.name).localeCompare(String(b.name),'pt-BR'));
   if (sort === 'featured') list.sort((a,b) => Number(b.featured)-Number(a.featured));
-  const card = (p,i) => {const photo=cloudinaryDeliveryUrl(p.imageUrl,700);return `<article class="product-card" data-product="${htm(p.id)}"><div class="product-visual ${htm(p.color||'pink')}${photo?' has-photo':''}" data-mark="${htm(p.mark||'GRAÇA')}">${photo?`<img class="product-photo" src="${htm(photo)}" alt="${htm(p.name)}" loading="lazy">`:''}<span class="product-index">GMC / ${String(i+1).padStart(2,'0')}</span><button class="quick-add" data-add="${htm(p.id)}" aria-label="Escolher ${htm(p.name)}">+</button></div><div class="product-info"><div><h4>${htm(p.name)}</h4><p>${htm(String(p.category||'').toUpperCase())}</p></div><span class="product-price">${Number(p.discount||0)?`<del>${money(Number(p.price))}</del> `:''}<b>${money(productCents(p)/100)}</b></span></div></article>`;};
+  const card = (p,i) => {const photo=cloudinaryDeliveryUrl(p.imageUrl,700),soldOut=totalProductStock(p)<1;return `<article class="product-card${soldOut?' is-sold-out':''}" data-product="${htm(p.id)}"><div class="product-visual ${htm(p.color||'pink')}${photo?' has-photo':''}" data-mark="${htm(p.mark||'GRAÇA')}">${photo?`<img class="product-photo" src="${htm(photo)}" alt="${htm(p.name)}" loading="lazy">`:''}<span class="product-index">GMC / ${String(i+1).padStart(2,'0')}</span>${soldOut?'<span class="sold-out-badge">ESGOTADO</span>':''}<button class="quick-add" data-add="${htm(p.id)}" aria-label="${soldOut?'Produto esgotado':'Escolher '+htm(p.name)}" ${soldOut?'disabled':''}>${soldOut?'×':'+'}</button></div><div class="product-info"><div><h4>${htm(p.name)}</h4><p>${htm(String(p.category||'').toUpperCase())}</p></div><span class="product-price">${Number(p.discount||0)?`<del>${money(Number(p.price))}</del> `:''}<b>${money(productCents(p)/100)}</b></span></div></article>`;};
   const empty = catalogLoaded ? '<div class="empty-state">O CATÁLOGO ESTÁ SENDO PREPARADO PELA GRAÇA.</div>' : '<div class="empty-state">CARREGANDO A COLEÇÃO…</div>';
   if(productGrid)productGrid.innerHTML = list.length ? list.map(card).join('') : empty;
-  const categoriesList = ['Todas', ...new Set([...categoriesFromFirestore, ...activeProducts().map(p => p.category).filter(Boolean)])];
+  if(categoryFilter&&categoryFilter.value!==cat)categoryFilter.value=cat;
   if(categoryFilter)categoryFilter.innerHTML = categoriesList.map(c => `<option value="${htm(c)}" ${c===cat?'selected':''}>${htm(c==='Todas'?'Todas as categorias':c)}</option>`).join('');
   const picks = activeProducts().filter(p => p.featured);
   if(featuredProducts)featuredProducts.innerHTML = picks.length ? picks.map(card).join('') : '<div class="empty-state">A curadoria será exibida aqui.</div>';
@@ -600,19 +616,22 @@ renderProducts = function() {
 openProduct = function(id) {
   const p = products.find(item => String(item.id) === String(id) && item.active !== false);
   if (!p) return toast('Este produto não está disponível.');
-  selectedSize = p.sizes?.[0] || 'Único';
+  const sizes=p.sizes?.length?p.sizes:['Único'];
+  selectedSize = sizes.find(size=>stockForSize(p,size)>0) || sizes[0];
+  const totalStock=totalProductStock(p);
   const gallery=galleryForProduct(p),photo=cloudinaryDeliveryUrl(gallery[0]?.imageUrl||p.imageUrl,1000);
-  openModal(`<div class="product-detail"><div><div class="detail-art ${htm(p.color||'pink')}${photo?' has-photo':''}" id="detailMainPhoto">${photo?`<img class="detail-photo" src="${htm(photo)}" alt="${htm(p.name)}">`:htm(p.mark||'GRAÇA')}</div>${gallery.length>1?`<div class="product-gallery-thumbs">${gallery.map((image,index)=>`<button type="button" data-gallery-index="${index}" aria-label="Ver foto ${index+1} de ${htm(p.name)}"><img src="${htm(cloudinaryDeliveryUrl(image.imageUrl,150))}" alt=""></button>`).join('')}</div>`:''}</div><div><div class="section-kicker">GRAÇA / PEÇA</div><h2 id="modalTitle">${htm(p.name)}</h2><strong>${money(productCents(p)/100)}</strong><p>${htm(p.description||'')}</p><p class="fine-print">ESTOQUE INFORMADO: ${Number(p.stock||0)} UNIDADES · DISPONIBILIDADE SERÁ CONFIRMADA PELA LOJA</p><label class="fine-print" for="sizeChoice">ESCOLHA UMA VARIAÇÃO</label><div class="size-options" id="sizeChoice">${(p.sizes?.length?p.sizes:['Único']).map(size=>`<button type="button" data-size="${htm(size)}" class="${size===selectedSize?'selected':''}">${htm(size)}</button>`).join('')}</div><button class="pill-button dark" id="detailAdd" ${Number(p.stock||0)<1?'disabled':''}>ADICIONAR AO CARRINHO ↗</button></div></div>`);
-  $$('[data-size]').forEach(button => button.onclick = () => { selectedSize=button.dataset.size; $$('[data-size]').forEach(item=>item.classList.toggle('selected',item===button)); });
+  openModal(`<div class="product-detail"><div><div class="detail-art ${htm(p.color||'pink')}${photo?' has-photo':''}" id="detailMainPhoto">${photo?`<img class="detail-photo" src="${htm(photo)}" alt="${htm(p.name)}">`:htm(p.mark||'GRAÇA')}</div>${gallery.length>1?`<div class="product-gallery-thumbs">${gallery.map((image,index)=>`<button type="button" data-gallery-index="${index}" aria-label="Ver foto ${index+1} de ${htm(p.name)}"><img src="${htm(cloudinaryDeliveryUrl(image.imageUrl,150))}" alt=""></button>`).join('')}</div>`:''}</div><div><div class="section-kicker">GRAÇA / PEÇA</div><h2 id="modalTitle">${htm(p.name)}</h2><strong>${money(productCents(p)/100)}</strong><p>${htm(p.description||'')}</p><p class="fine-print">${totalStock<1?'<strong class="stock-sold-out">PRODUTO ESGOTADO</strong>':`ESTOQUE TOTAL: ${totalStock} UNIDADES`}</p><label class="fine-print" for="sizeChoice">ESCOLHA UMA VARIAÇÃO</label><div class="size-options" id="sizeChoice">${sizes.map(size=>{const quantity=stockForSize(p,size),outOfStock=quantity<1;return `<button type="button" data-size="${htm(size)}" class="${size===selectedSize?'selected':''}" ${outOfStock?'disabled':''}><span>${htm(size)}</span><small>${outOfStock?'ESGOTADO':`${quantity} DISPONÍVEIS`}</small></button>`;}).join('')}</div><button class="pill-button dark" id="detailAdd" ${totalStock<1||stockForSize(p,selectedSize)<1?'disabled':''}>${totalStock<1?'ESGOTADO':'ADICIONAR AO CARRINHO ↗'}</button></div></div>`);
+  $$('[data-size]').forEach(button => button.onclick = () => { if(button.disabled)return;selectedSize=button.dataset.size; $$('[data-size]').forEach(item=>item.classList.toggle('selected',item===button));$('#detailAdd').disabled=stockForSize(p,selectedSize)<1; });
   $$('[data-gallery-index]').forEach(button=>button.onclick=()=>{const image=gallery[Number(button.dataset.galleryIndex)];const source=cloudinaryDeliveryUrl(image?.imageUrl,1000);if(!source)return;$('#detailMainPhoto').innerHTML=`<img class="detail-photo" src="${htm(source)}" alt="${htm(p.name)}">`;$$('[data-gallery-index]').forEach(item=>item.classList.toggle('active',item===button));});
   $('#detailAdd').onclick = () => { addToCart(p.id,selectedSize); closeModal(); openCart(); };
 };
 
 addToCart = function(id,size) {
   const p = products.find(item => String(item.id) === String(id) && item.active !== false);
-  if (!p || Number(p.stock||0) < 1) return toast('Produto indisponível.');
+  const available=p?stockForSize(p,size):0;
+  if (!p || available < 1) return toast('Esta variação está esgotada.');
   const item = cart.find(entry => String(entry.id)===String(id) && entry.size===size);
-  if (item) item.qty = Math.min(item.qty+1, Number(p.stock)); else cart.push({id,size,qty:1});
+  if (item) {if(item.qty>=available)return toast(`Há somente ${available} unidade(s) deste tamanho.`);item.qty+=1;} else cart.push({id,size,qty:1});
   set('cart',cart); renderCart(); toast('Peça adicionada ao carrinho.');
 };
 
@@ -644,12 +663,13 @@ renderCart = function() {
   $('#cartCount').textContent = cart.reduce((sum,item)=>sum+Number(item.qty||0),0);
   $('#cartItems').innerHTML = cart.length ? cart.map((item,index) => {
     const p=products.find(product=>String(product.id)===String(item.id));
-    return `<div class="cart-line"><div class="cart-thumb">${cloudinaryDeliveryUrl(p?.imageUrl,180)?`<img src="${htm(cloudinaryDeliveryUrl(p.imageUrl,180))}" alt="" loading="lazy">`:htm(p?.mark||'✳')}</div><div><h4>${htm(p?.name||'Produto indisponível')}</h4><small>${htm(item.size)} · ${p?money(productCents(p)/100):'Atualize a coleção'}</small><div class="qty-controls"><button data-q="${index}" data-delta="-1" aria-label="Diminuir quantidade">−</button>${Number(item.qty)}<button data-q="${index}" data-delta="1" aria-label="Aumentar quantidade">+</button></div></div><button data-rm="${index}" aria-label="Remover item">×</button></div>`;
+    const available=p?stockForSize(p,item.size):0,oversold=Number(item.qty)>available;
+    return `<div class="cart-line${oversold?' cart-line-unavailable':''}"><div class="cart-thumb">${cloudinaryDeliveryUrl(p?.imageUrl,180)?`<img src="${htm(cloudinaryDeliveryUrl(p.imageUrl,180))}" alt="" loading="lazy">`:htm(p?.mark||'✳')}</div><div><h4>${htm(p?.name||'Produto indisponível')}</h4><small>${htm(item.size)} · ${p?money(productCents(p)/100):'Atualize a coleção'}</small>${oversold?'<small class="stock-sold-out">ESTOQUE INSUFICIENTE · AJUSTE A QUANTIDADE</small>':''}<div class="qty-controls"><button data-q="${index}" data-delta="-1" aria-label="Diminuir quantidade">−</button>${Number(item.qty)}<button data-q="${index}" data-delta="1" aria-label="Aumentar quantidade" ${Number(item.qty)>=available?'disabled':''}>+</button></div></div><button data-rm="${index}" aria-label="Remover item">×</button></div>`;
   }).join('') : '<div class="empty-state">SEU CARRINHO ESTÁ VAZIO.</div>';
-  const validCart = cart.every(item=>products.some(p=>String(p.id)===String(item.id)&&p.active!==false));
+  const validCart = cart.every(item=>{const p=products.find(product=>String(product.id)===String(item.id)&&product.active!==false);return Boolean(p&&Number(item.qty)>0&&Number(item.qty)<=stockForSize(p,item.size));});
   const totals=cartTotals();
-  $('#cartSummary').innerHTML = cart.length ? `<form id="couponForm" class="coupon-form"><label for="couponInput">CUPOM DE DESCONTO VIP</label><div><input id="couponInput" name="coupon" maxlength="30" value="${htm(cartCoupon)}" placeholder="Ex.: GRACA10" autocomplete="off"><button id="applyCoupon" class="mini-button" type="submit">APLICAR</button></div><small id="couponStatus" class="${totals.coupon?'coupon-ok':''}" aria-live="polite">${totals.coupon?`${htm(totals.coupon.code)} aplicado: ${totals.coupon.value}% de desconto.`:cartCoupon?'Confirme o código para aplicar o desconto.':'Códigos publicados para membros VIP ativos.'}</small></form><div class="total"><span>SUBTOTAL</span><strong>${money(totals.subtotalCents/100)}</strong></div>${totals.discountCents?`<div class="total"><span>DESCONTO ${htm(totals.coupon?.code||'')}</span><strong>−${money(totals.discountCents/100)}</strong></div>`:''}<div class="total"><span>VALOR ESTIMADO</span><strong>${money(totals.totalCents/100)}</strong></div><p class="fine-print">A solicitação não é uma venda nem confirma a reserva. A disponibilidade será verificada pela equipe.</p><button id="checkoutBtn" class="pill-button dark" ${validCart?'':'disabled'}>SOLICITAR RESERVA ↗</button>` : '';
-  $$('[data-q]').forEach(button=>button.onclick=()=>{const index=Number(button.dataset.q);const qty=Number(cart[index].qty)+Number(button.dataset.delta);if(qty<1)cart.splice(index,1);else cart[index].qty=qty;set('cart',cart);renderCart();});
+  $('#cartSummary').innerHTML = cart.length ? `<form id="couponForm" class="coupon-form"><label for="couponInput">CUPOM DE DESCONTO VIP</label><div><input id="couponInput" name="coupon" maxlength="30" value="${htm(cartCoupon)}" placeholder="Ex.: GRACA10" autocomplete="off"><button id="applyCoupon" class="mini-button" type="submit">APLICAR</button></div><small id="couponStatus" class="${totals.coupon?'coupon-ok':''}" aria-live="polite">${totals.coupon?`${htm(totals.coupon.code)} aplicado: ${totals.coupon.value}% de desconto.`:cartCoupon?'Confirme o código para aplicar o desconto.':'Códigos publicados para membros VIP ativos.'}</small></form><div class="total"><span>SUBTOTAL</span><strong>${money(totals.subtotalCents/100)}</strong></div>${totals.discountCents?`<div class="total"><span>DESCONTO ${htm(totals.coupon?.code||'')}</span><strong>−${money(totals.discountCents/100)}</strong></div>`:''}<div class="total"><span>VALOR ESTIMADO</span><strong>${money(totals.totalCents/100)}</strong></div><p class="fine-print">A solicitação não é uma venda nem confirma a reserva. A disponibilidade será verificada pela equipe.</p>${validCart?'':'<p class="stock-sold-out">Uma das variações não tem mais estoque suficiente. Ajuste o carrinho para continuar.</p>'}<button id="checkoutBtn" class="pill-button dark" ${validCart?'':'disabled'}>SOLICITAR RESERVA ↗</button>` : '';
+  $$('[data-q]').forEach(button=>button.onclick=()=>{const index=Number(button.dataset.q),item=cart[index],qty=Number(item.qty)+Number(button.dataset.delta),product=products.find(p=>String(p.id)===String(item.id));if(qty<1)cart.splice(index,1);else if(button.dataset.delta==='1'&&qty>stockForSize(product,item.size))return toast('Não há mais unidades deste tamanho no estoque.');else item.qty=qty;set('cart',cart);renderCart();});
   $$('[data-rm]').forEach(button=>button.onclick=()=>{cart.splice(Number(button.dataset.rm),1);set('cart',cart);renderCart();});
   $('#couponForm')?.addEventListener('submit',event=>{event.preventDefault();void applyCartCoupon(new FormData(event.currentTarget).get('coupon'));});
   $('#checkoutBtn')?.addEventListener('click',checkout);
@@ -658,6 +678,8 @@ renderCart = function() {
 function checkout() {}
 checkout = function() {
   if (!cart.length || savingReservation) return;
+  const unavailable=cart.find(item=>{const product=products.find(candidate=>String(candidate.id)===String(item.id)&&candidate.active!==false);return !product||Number(item.qty)<1||Number(item.qty)>stockForSize(product,item.size);});
+  if(unavailable)return toast('Uma variação está sem estoque suficiente. Atualize o carrinho antes de enviar.');
   if(cartCoupon&&appliedCartCoupon?.code!==cartCoupon){void applyCartCoupon(cartCoupon);toast('Confirme o cupom antes de enviar a solicitação.');return;}
   const basket = cart.map(item=>({ ...item }));
   const preview = basket.map(item=>{const p=products.find(product=>String(product.id)===String(item.id));return `<li>${htm(p?.name||'Produto')} · ${htm(item.size)} · ${Number(item.qty)} un. · ${p?money(productCents(p)*Number(item.qty)/100):'indisponível'}</li>`;}).join('');
@@ -839,21 +861,34 @@ async function changeReservationStatus(orderId,nextStatus) {
     const couponRef=releaseCoupon?doc(db,'coupons',order.couponCode):null;
     const couponSnapshot=couponRef?await transaction.get(couponRef):null;
     const grouped=new Map();
-    for(const item of order.items||[])grouped.set(item.productId,(grouped.get(item.productId)||0)+Number(item.quantity));
-    const productRefs=[...grouped.keys()].map(id=>doc(db,'products',id));
+    for(const item of order.items||[]){const key=JSON.stringify([item.productId,String(item.size||'Único')]),current=grouped.get(key)||{productId:item.productId,size:String(item.size||'Único'),quantity:0};current.quantity+=Number(item.quantity);grouped.set(key,current);}
+    const productIds=[...new Set([...grouped.values()].map(item=>item.productId))];
+    const productRefs=productIds.map(id=>doc(db,'products',id));
     const productSnapshots=[];
     for(const ref of productRefs)productSnapshots.push(await transaction.get(ref));
     const willConfirm=nextStatus==='Reserva confirmada';
     const willCancel=nextStatus==='Cancelado'&&order.stockApplied===true&&!order.stockRestored;
     if(willConfirm) {
       for(let i=0;i<productSnapshots.length;i++){
-        const productSnapshot=productSnapshots[i],quantity=grouped.get(productRefs[i].id),product=productSnapshot.data();
-        if(!productSnapshot.exists()||product.active===false||Number(product.stock)<quantity)throw new Error(`Estoque insuficiente para ${product?.name||productRefs[i].id}.`);
-        if((order.items||[]).filter(item=>item.productId===productRefs[i].id).some(item=>!product.sizes?.includes(item.size)))throw new Error(`Variação indisponível para ${product.name}.`);
+        const productSnapshot=productSnapshots[i],product=productSnapshot.data(),productGroups=[...grouped.values()].filter(item=>item.productId===productRefs[i].id);
+        if(!productSnapshot.exists()||product.active===false)throw new Error(`Produto indisponível: ${product?.name||productRefs[i].id}.`);
+        for(const item of productGroups){
+          if(!product.sizes?.includes(item.size)||stockForSize(product,item.size)<item.quantity)throw new Error(`Estoque insuficiente no tamanho ${item.size} para ${product.name}. Atualize as quantidades por tamanho no cadastro do produto.`);
+        }
       }
-      productSnapshots.forEach((snapshot,index)=>transaction.update(productRefs[index],{stock:Number(snapshot.data().stock)-grouped.get(productRefs[index].id),updatedAt:serverTimestamp()}));
+      productSnapshots.forEach((snapshot,index)=>{
+        const product=snapshot.data(),sizeStock=product.stockBySize&&typeof product.stockBySize==='object'&&!Array.isArray(product.stockBySize)?{...product.stockBySize}:{[product.sizes?.[0]||'Único']:Number(product.stock||0)};
+        for(const item of [...grouped.values()].filter(entry=>entry.productId===productRefs[index].id))sizeStock[item.size]=Number(sizeStock[item.size]||0)-item.quantity;
+        const stock=Object.values(sizeStock).reduce((sum,value)=>sum+Number(value||0),0);
+        transaction.update(productRefs[index],{stockBySize:sizeStock,stock,updatedAt:serverTimestamp()});
+      });
     }
-    if(willCancel)productSnapshots.forEach((snapshot,index)=>{if(snapshot.exists())transaction.update(productRefs[index],{stock:Number(snapshot.data().stock)+grouped.get(productRefs[index].id),updatedAt:serverTimestamp()});});
+    if(willCancel)productSnapshots.forEach((snapshot,index)=>{if(snapshot.exists()){
+      const product=snapshot.data(),sizeStock=product.stockBySize&&typeof product.stockBySize==='object'&&!Array.isArray(product.stockBySize)?{...product.stockBySize}:{[product.sizes?.[0]||'Único']:Number(product.stock||0)};
+      for(const item of [...grouped.values()].filter(entry=>entry.productId===productRefs[index].id))sizeStock[item.size]=Number(sizeStock[item.size]||0)+item.quantity;
+      const stock=Object.values(sizeStock).reduce((sum,value)=>sum+Number(value||0),0);
+      transaction.update(productRefs[index],{stockBySize:sizeStock,stock,updatedAt:serverTimestamp()});
+    }});
       const updated={status:nextStatus,statusHistory:[...(order.statusHistory||[order.status]),nextStatus],updatedAt:serverTimestamp()};
     if(willConfirm){updated.stockApplied=true;updated.confirmedAt=serverTimestamp();}
     if(willCancel){updated.stockApplied=false;updated.stockRestored=true;updated.cancelledAt=serverTimestamp();}
@@ -1068,12 +1103,28 @@ async function configureCloudinaryUpload() {
 productEditor = async function(id='') {
   const existing=products.find(item=>String(item.id)===String(id));
   const p=existing||{name:'',category:'',price:'',discount:0,stock:0,sizes:['Único'],color:'pink',mark:'GRAÇA',description:'',featured:false,active:true,imageUrl:'',imagePublicId:''};
+  const initialSizes=Array.isArray(p.sizes)&&p.sizes.length?p.sizes:['Único'];
+  const sizeStockDraft=p.stockBySize&&typeof p.stockBySize==='object'&&!Array.isArray(p.stockBySize)
+    ? {...p.stockBySize}
+    : {[initialSizes[0]]:Number(p.stock||0)};
   const savedCost=id?await getDoc(doc(db,'productCosts',String(id))).catch(()=>null):null;
   const privateCost=savedCost?.exists()?savedCost.data().cost:productCosts.get(String(id))?.cost;
   let gallery=galleryForProduct(p).map(image=>({imageUrl:image.imageUrl,imagePublicId:image.imagePublicId}));
   let externalUrls=[''];
-  openModal(`<div class="section-kicker">CATÁLOGO / ${id?'EDITAR':'NOVO'}</div><h2 id="modalTitle">${id?'EDITAR PRODUTO':'CADASTRAR PRODUTO'}.</h2>${p.seededExample?'<p class="seed-review-note">Este é um exemplo: confirme nome, preço, estoque e variações antes de publicar.</p>':''}<form id="productForm" class="modal-form"><label>NOME<input name="name" maxlength="160" required value="${htm(p.name)}"></label><label>CATEGORIA<input name="category" maxlength="80" required value="${htm(p.category)}"></label><div class="modal-grid"><label>PREÇO<input name="price" type="number" min="0.01" max="100000" step=".01" required value="${htm(p.price)}"></label><label>CUSTO (OPCIONAL)<input name="cost" type="number" min="0" step=".01" value="${htm(privateCost??'')}"></label></div><div class="modal-grid"><label>DESCONTO (%)<input name="discount" type="number" min="0" max="99" value="${htm(p.discount||0)}"></label><label>ESTOQUE<input name="stock" type="number" min="0" max="100000" step="1" required value="${htm(p.stock||0)}"></label></div><label>TAMANHOS / VARIAÇÕES (SEPARADOS POR VÍRGULA)<input name="sizes" required value="${htm((p.sizes||[]).join(', '))}"></label><label>DESCRIÇÃO<textarea name="description" maxlength="1200">${htm(p.description||'')}</textarea></label><label><input name="featured" type="checkbox" ${p.featured?'checked':''}> Exibir na curadoria em destaque</label><label><input name="active" type="checkbox" ${p.active!==false?'checked':''}> Publicado no catálogo</label><section class="product-gallery-editor"><h3>FOTOS DO PRODUTO · ${gallery.length}/5</h3><div id="productGalleryPreview" class="product-gallery-thumbnails"></div><label>ENVIAR ATÉ 5 ARQUIVOS (JPEG, PNG OU WEBP)<input id="photoFiles" type="file" accept="image/jpeg,image/png,image/webp" multiple></label><button id="uploadProductFiles" class="mini-button" type="button">ENVIAR FOTOS SELECIONADAS</button><div id="externalImageUrlFields"></div><button id="addExternalImageUrl" class="mini-button" type="button">+ ADICIONAR URL DE IMAGEM</button><button id="importExternalImages" class="mini-button" type="button">IMPORTAR URLs PELO CLOUDINARY</button><p class="fine-print">Você pode manter até 5 imagens. Links externos são re-hospedados no Cloudinary; somente a URL segura devolvida pelo serviço será salva. O preset de upload fica visível no navegador; restrinja formatos e pasta no Cloudinary.</p></section><button class="pill-button dark" id="saveProduct">SALVAR PRODUTO</button></form>`);
+  openModal(`<div class="section-kicker">CATÁLOGO / ${id?'EDITAR':'NOVO'}</div><h2 id="modalTitle">${id?'EDITAR PRODUTO':'CADASTRAR PRODUTO'}.</h2>${p.seededExample?'<p class="seed-review-note">Este é um exemplo: confirme nome, preço, estoque e variações antes de publicar.</p>':''}<form id="productForm" class="modal-form"><label>NOME<input name="name" maxlength="160" required value="${htm(p.name)}"></label><label>CATEGORIA<input name="category" maxlength="80" required value="${htm(p.category)}"></label><div class="modal-grid"><label>PREÇO<input name="price" type="number" min="0.01" max="100000" step=".01" required value="${htm(p.price)}"></label><label>CUSTO (OPCIONAL)<input name="cost" type="number" min="0" step=".01" value="${htm(privateCost??'')}"></label></div><label>DESCONTO (%)<input name="discount" type="number" min="0" max="99" value="${htm(p.discount||0)}"></label><label>TAMANHOS / VARIAÇÕES (SEPARADOS POR VÍRGULA)<input id="productSizes" name="sizes" required maxlength="400" value="${htm(initialSizes.join(', '))}"><small>Ex.: P, M, G, GG ou 36, 38, 40, 42.</small></label><fieldset class="inventory-by-size"><legend>QUANTIDADE DISPONÍVEL POR TAMANHO</legend><p class="fine-print">O estoque antigo, quando não tinha divisão por tamanho, foi associado à primeira variação. Ajuste as quantidades reais antes de publicar.</p><div id="sizeStockFields" class="size-stock-fields"></div><strong id="stockTotalSummary" class="stock-total-summary">ESTOQUE TOTAL: 0</strong></fieldset><label>DESCRIÇÃO<textarea name="description" maxlength="1200">${htm(p.description||'')}</textarea></label><label><input name="featured" type="checkbox" ${p.featured?'checked':''}> Exibir na curadoria em destaque</label><label><input name="active" type="checkbox" ${p.active!==false?'checked':''}> Publicado no catálogo</label><section class="product-gallery-editor"><h3>FOTOS DO PRODUTO · ${gallery.length}/5</h3><div id="productGalleryPreview" class="product-gallery-thumbnails"></div><label>ENVIAR ATÉ 5 ARQUIVOS (JPEG, PNG OU WEBP)<input id="photoFiles" type="file" accept="image/jpeg,image/png,image/webp" multiple></label><button id="uploadProductFiles" class="mini-button" type="button">ENVIAR FOTOS SELECIONADAS</button><div id="externalImageUrlFields"></div><button id="addExternalImageUrl" class="mini-button" type="button">+ ADICIONAR URL DE IMAGEM</button><button id="importExternalImages" class="mini-button" type="button">IMPORTAR URLs PELO CLOUDINARY</button><p class="fine-print">Você pode manter até 5 imagens. Links externos são re-hospedados no Cloudinary; somente a URL segura devolvida pelo serviço será salva. O preset de upload fica visível no navegador; restrinja formatos e pasta no Cloudinary.</p></section><button class="pill-button dark" id="saveProduct">SALVAR PRODUTO</button></form>`);
   const fileInput=$('#photoFiles'), uploadButton=$('#uploadProductFiles'), saveButton=$('#saveProduct');
+  const sizeInput=$('#productSizes');
+  const parsedSizes=()=>[...new Set(String(sizeInput?.value||'').split(',').map(value=>value.trim()).filter(Boolean))];
+  const updateSizeStockFields=()=>{
+    const sizes=parsedSizes(),box=$('#sizeStockFields');if(!box)return;
+    if(!sizes.length||sizes.length>20){box.innerHTML='<p class="stock-sold-out">Informe de 1 a 20 tamanhos separados por vírgula.</p>';$('#stockTotalSummary').textContent='ESTOQUE TOTAL: —';return;}
+    box.innerHTML=sizes.map(size=>`<label class="size-stock-field">TAMANHO ${htm(size)}<input type="number" inputmode="numeric" min="0" max="100000" step="1" data-stock-size="${htm(size)}" value="${htm(sizeStockDraft[size]??0)}" required></label>`).join('');
+    $$('[data-stock-size]').forEach(input=>input.oninput=()=>{sizeStockDraft[input.dataset.stockSize]=input.value;updateStockTotal();});
+    updateStockTotal();
+  };
+  const updateStockTotal=()=>{const total=parsedSizes().reduce((sum,size)=>sum+(Number(sizeStockDraft[size])||0),0);const summary=$('#stockTotalSummary');if(summary)summary.textContent=`ESTOQUE TOTAL: ${total} UNIDADE(S)`;};
+  sizeInput.oninput=updateSizeStockFields;
+  updateSizeStockFields();
   const renderGallery=()=>{
     const box=$('#productGalleryPreview');if(!box)return;
     box.innerHTML=gallery.length?gallery.map((image,index)=>`<figure class="product-gallery-thumb"><img src="${htm(cloudinaryDeliveryUrl(image.imageUrl,220))}" alt="Foto ${index+1} do produto"><button type="button" class="mini-button danger" data-remove-gallery-image="${index}" aria-label="Remover foto ${index+1}">REMOVER</button>${index===0?'<figcaption>FOTO PRINCIPAL</figcaption>':''}</figure>`).join(''):'<div class="empty-state">ADICIONE AO MENOS UMA FOTO DO CLOUDINARY.</div>';
@@ -1115,16 +1166,20 @@ productEditor = async function(id='') {
     finally{button.disabled=false;button.textContent='IMPORTAR URLs PELO CLOUDINARY';}
   };
   $('#productForm').onsubmit=async event=>{
-    event.preventDefault();const form=new FormData(event.currentTarget),name=String(form.get('name')).trim(),category=String(form.get('category')).trim(),price=Number(form.get('price')),stock=Number(form.get('stock')),sizes=[...new Set(String(form.get('sizes')).split(',').map(value=>value.trim()).filter(Boolean))];
+    event.preventDefault();const form=new FormData(event.currentTarget),name=String(form.get('name')).trim(),category=String(form.get('category')).trim(),price=Number(form.get('price')),sizes=parsedSizes();
+    const stockInputs=$$('[data-stock-size]');
+    for(const input of stockInputs)sizeStockDraft[input.dataset.stockSize]=input.value;
+    const stockBySize=Object.fromEntries(sizes.map(size=>[size,Number(sizeStockDraft[size])]));
+    const stock=Object.values(stockBySize).reduce((sum,value)=>sum+value,0);
     const discount=Number(form.get('discount')||0),costRaw=form.get('cost'),costValue=costRaw===''?null:Number(costRaw);
-    if(!name||name.length>160||!category||category.length>80||!Number.isFinite(price)||price<=0||price>100000||!Number.isInteger(stock)||stock<0||stock>100000||sizes.length<1||sizes.length>20||!Number.isInteger(discount)||discount<0||discount>99||(costValue!==null&&(!Number.isFinite(costValue)||costValue<0||costValue>100000)))return toast('Confira nome, categoria, preço, custo, desconto, estoque e variações.');
+    if(!name||name.length>160||!category||category.length>80||!Number.isFinite(price)||price<=0||price>100000||!Number.isInteger(stock)||stock<0||stock>100000||sizes.length<1||sizes.length>20||sizes.some(size=>size.length>40)||new Set(sizes).size!==sizes.length||Object.values(stockBySize).some(value=>!Number.isInteger(value)||value<0||value>100000)||!Number.isInteger(discount)||discount<0||discount>99||(costValue!==null&&(!Number.isFinite(costValue)||costValue<0||costValue>100000)))return toast('Confira nome, categoria, preço, custo, desconto, estoque e variações.');
     if(fileInput.files?.length||externalUrls.some(value=>value.trim()))return toast('Envie as fotos selecionadas e importe cada URL antes de salvar.');
     if(!gallery.length||gallery.length>5||gallery.some(image=>!isCloudinaryUrl(image.imageUrl)||!isCloudinaryPublicId(image.imagePublicId)))return toast('Envie pelo menos uma foto válida ao Cloudinary antes de salvar.');
     saveButton.disabled=true;saveButton.textContent='SALVANDO…';
     try{
       const ref=id?doc(db,'products',id):doc(collection(db,'products'));
       const mainImage=gallery[0];
-      const product={name,category,price,discount,stock,sizes,description:String(form.get('description')||'').trim(),featured:form.get('featured')==='on',active:form.get('active')==='on',imageUrl:mainImage.imageUrl,imagePublicId:mainImage.imagePublicId,imageGallery:gallery.map(image=>({imageUrl:image.imageUrl,imagePublicId:image.imagePublicId})),color:p.color||'pink',mark:p.mark||'GRAÇA',updatedAt:serverTimestamp()};
+      const product={name,category,price,discount,stock,stockBySize,sizes,description:String(form.get('description')||'').trim(),featured:form.get('featured')==='on',active:form.get('active')==='on',imageUrl:mainImage.imageUrl,imagePublicId:mainImage.imagePublicId,imageGallery:gallery.map(image=>({imageUrl:image.imageUrl,imagePublicId:image.imagePublicId})),color:p.color||'pink',mark:p.mark||'GRAÇA',updatedAt:serverTimestamp()};
       await runTransaction(db,async transaction=>{
         transaction.set(ref,{...product,cost:deleteField()},{merge:true});
         transaction.set(doc(db,'productCosts',ref.id),{cost:costValue,updatedAt:serverTimestamp()},{merge:true});
@@ -1285,6 +1340,137 @@ function isVisibleAfterFinanceReset(order) {
   return !archivedStatus||created>=financeBaselineAt;
 }
 
+const siteResetCollections=['products','productCosts','categories','orders','coupons','campaigns','messages','comments','vipUsers','reservationLimits','messageLimits','settings'];
+
+async function collectSiteResetSnapshot() {
+  const snapshots=await Promise.all(siteResetCollections.map(name=>getDocs(collection(db,name))));
+  return Object.fromEntries(siteResetCollections.map((name,index)=>[name,snapshots[index].docs]));
+}
+
+function siteResetDocumentCount(snapshot) {
+  return Object.values(snapshot).reduce((sum,documents)=>sum+documents.length,0);
+}
+
+function siteResetSnapshotUnchanged(previous,current) {
+  return siteResetCollections.every(name=>{
+    const before=previous?.[name]||[],after=current?.[name]||[];
+    if(before.length!==after.length)return false;
+    const currentById=new Map(after.map(item=>[item.id,JSON.stringify(serializeResetValue(item.data()))]));
+    return before.every(item=>currentById.get(item.id)===JSON.stringify(serializeResetValue(item.data())));
+  });
+}
+
+function serializeResetValue(value) {
+  if(value&&typeof value.toDate==='function')return {$type:'timestamp',value:value.toDate().toISOString()};
+  if(value instanceof Date)return value.toISOString();
+  if(Array.isArray(value))return value.map(serializeResetValue);
+  if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,serializeResetValue(item)]));
+  return value;
+}
+
+function makeSiteResetBackup(snapshot) {
+  const payload={
+    project:'GRAÇA | Gente, Moda e Comunidade',
+    exportedAt:new Date().toISOString(),
+    notice:'Cópia de segurança criada antes da redefinição. Os cadastros de clientes e os documentos de administradores não fazem parte da exclusão.',
+    preservedCollections:['customers','admins'],
+    collections:Object.fromEntries(siteResetCollections.map(name=>[name,(snapshot[name]||[]).map(document=>({id:document.id,data:serializeResetValue(document.data())}))]))
+  };
+  return new Blob([JSON.stringify(payload,null,2)],{type:'application/json;charset=utf-8'});
+}
+
+function renderSiteResetBackupReady(snapshot,{changed=false}={}) {
+  if(pendingSiteReset?.downloadUrl)URL.revokeObjectURL(pendingSiteReset.downloadUrl);
+  const blob=makeSiteResetBackup(snapshot),downloadUrl=URL.createObjectURL(blob),filename=`graca-backup-antes-da-redefinicao-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
+  pendingSiteReset={snapshot,downloadUrl,filename,backupDownloaded:false,userId:auth.currentUser?.uid||''};
+  const total=siteResetDocumentCount(snapshot),counts=siteResetCollections.map(name=>`${name}: ${(snapshot[name]||[]).length}`).filter(line=>!line.endsWith(': 0')).join(' · ')||'Nenhum registro encontrado nas coleções que serão limpas.';
+  $('#siteResetBackupPanel').innerHTML=`<div class="reset-backup-ready"><strong>${changed?'Os dados mudaram após a cópia anterior.':'Cópia de segurança pronta.'}</strong><p>${total} registro(s) serão removidos. Baixe a cópia mais recente antes de continuar.</p><p class="fine-print">${htm(counts)}</p><a class="mini-button primary" id="downloadSiteResetBackup" href="${downloadUrl}" download="${htm(filename)}">BAIXAR CÓPIA JSON</a><p id="siteResetBackupStatus" class="fine-print" aria-live="polite">Aguarde iniciar o download para liberar a etapa final.</p><button class="mini-button danger" id="deleteSiteData" type="button" disabled>APAGAR DADOS E REINICIAR SITE</button></div>`;
+  $('#downloadSiteResetBackup').onclick=()=>{
+    if(!pendingSiteReset)return;
+    pendingSiteReset.backupDownloaded=true;
+    $('#siteResetBackupStatus').textContent='Cópia preparada para download. Confira se o arquivo foi salvo antes de apagar os dados.';
+    $('#deleteSiteData').disabled=false;
+  };
+  $('#deleteSiteData').onclick=()=>void executeSiteReset();
+}
+
+async function prepareSiteResetBackup() {
+  const button=$('#prepareSiteReset'),panel=$('#siteResetBackupPanel');
+  if(!isAdmin||!auth.currentUser||auth.currentUser.isAnonymous)return toast('Entre novamente na conta administrativa para redefinir o site.');
+  button.disabled=true;button.textContent='PREPARANDO CÓPIA…';panel.innerHTML='<p class="fine-print">Carregando os registros que serão incluídos na cópia…</p>';
+  try{
+    if(!await hasAdminAccess(auth.currentUser))throw new Error('Esta conta não possui autorização administrativa.');
+    const snapshot=await collectSiteResetSnapshot();
+    renderSiteResetBackupReady(snapshot);
+  }catch(error){console.error('Falha ao preparar a cópia de segurança:',error);panel.innerHTML=`<p class="stock-sold-out">Não foi possível preparar a cópia: ${htm(friendlyFirestoreError(error))}</p>`;}
+  finally{button.disabled=false;button.textContent='PREPARAR CÓPIA DE SEGURANÇA';}
+}
+
+async function executeSiteReset() {
+  const pending=pendingSiteReset,form=$('#siteResetForm'),button=$('#deleteSiteData');
+  if(!pending||!pending.backupDownloaded||!form||!button)return toast('Baixe a cópia de segurança antes de continuar.');
+  const values=new FormData(form),confirmation=String(values.get('confirmation')||'').trim(),password=String(values.get('password')||'');
+  if(confirmation!=='REDEFINIR SITE')return toast('Digite exatamente REDEFINIR SITE para confirmar.');
+  if(!password)return toast('Digite a senha da conta administrativa.');
+  button.disabled=true;button.textContent='CONFERINDO E APAGANDO…';
+  const status=$('#siteResetProgress');
+  try{
+    const user=auth.currentUser;
+    if(!user||user.uid!==pending.userId||!user.email||user.isAnonymous)throw new Error('A sessão administrativa mudou. Entre novamente e prepare uma nova cópia.');
+    await reauthenticateWithCredential(user,EmailAuthProvider.credential(user.email,password));
+    if(!await hasAdminAccess(user))throw new Error('Esta conta não possui autorização administrativa.');
+    const currentSnapshot=await collectSiteResetSnapshot();
+    if(!siteResetSnapshotUnchanged(pending.snapshot,currentSnapshot)){
+      renderSiteResetBackupReady(currentSnapshot,{changed:true});
+      status.textContent='A cópia foi atualizada porque houve mudanças. Baixe o novo arquivo antes de prosseguir.';
+      button.disabled=true;
+      return;
+    }
+    await getIdToken(user,true);
+    await setDoc(doc(db,'settings','siteReset'),{resetBy:user.uid,createdAt:serverTimestamp()});
+    const documents=siteResetCollections.flatMap(name=>pending.snapshot[name]||[]),total=documents.length;
+    let removed=0;
+    // Keep each batch small so Firestore's per-request rules-access budget is
+    // respected while every delete checks the short-lived reset marker.
+    const resetBatchSize=4;
+    for(let offset=0;offset<documents.length;offset+=resetBatchSize){
+      const batch=writeBatch(db);
+      documents.slice(offset,offset+resetBatchSize).forEach(document=>batch.delete(document.ref));
+      await batch.commit();removed+=Math.min(resetBatchSize,documents.length-offset);
+      if(status)status.textContent=`Removendo registros: ${removed} de ${total}.`;
+    }
+    const resetMarker=await getDoc(doc(db,'settings','siteReset'));
+    if(resetMarker.exists())await deleteDoc(doc(db,'settings','siteReset'));
+    const remainingSnapshot=await collectSiteResetSnapshot();
+    if(siteResetDocumentCount(remainingSnapshot)>0){
+      renderSiteResetBackupReady(remainingSnapshot,{changed:true});
+      $('#siteResetProgress').textContent='Chegaram novos registros durante a redefinição. Baixe a cópia atualizada para limpar o restante.';
+      toast('Apareceram registros novos durante a redefinição. Prepare a cópia atualizada e conclua novamente.');
+      return;
+    }
+    for(const key of ['products','orders','messages','discounts','comments','vipUsers','campaigns','cart','cartCoupon','pendingReservation'])localStorage.removeItem(`graca_${key}`);
+    if(pendingSiteReset?.downloadUrl)URL.revokeObjectURL(pendingSiteReset.downloadUrl);
+    pendingSiteReset=null;
+    closeModal();
+    toast('Redefinição concluída. Os cadastros de clientes e o acesso administrativo foram preservados.');
+    setTimeout(()=>window.location.reload(),1200);
+  }catch(error){
+    console.error('Falha ao redefinir os dados do site:',error);
+    if(status)status.textContent=`A operação parou. A cópia baixada permanece disponível. ${friendlyFirestoreError(error)}`;
+    toast(error?.code==='auth/invalid-credential'||error?.code==='auth/wrong-password'?'A senha não confere. Nenhum dado foi apagado.':friendlyFirestoreError(error));
+    button.disabled=false;button.textContent='TENTAR APAGAR NOVAMENTE';
+  }
+}
+
+function openSiteResetDialog() {
+  if(!isAdmin||!auth.currentUser||auth.currentUser.isAnonymous)return toast('Entre novamente na conta administrativa para redefinir o site.');
+  if(pendingSiteReset?.downloadUrl)URL.revokeObjectURL(pendingSiteReset.downloadUrl);
+  pendingSiteReset=null;
+  openModal(`<div class="section-kicker">ADMINISTRAÇÃO / RECOMEÇAR</div><h2 id="modalTitle">REDEFINIR O SITE.</h2><div class="site-reset-warning"><strong>Esta ação apaga dados de forma permanente.</strong><p>Pedidos e histórico financeiro, produtos, custos, categorias, cupons, campanhas, mensagens, comentários, membros VIP, configurações e limitadores de envio serão removidos depois que você baixar uma cópia JSON e confirmar com sua senha.</p><p><strong>Serão preservados:</strong> cadastros de clientes, contas no Firebase Authentication e administradores.</p><p><strong>Fotos:</strong> as imagens já enviadas ao Cloudinary não serão apagadas por esta ação.</p><p>Não há botão para desfazer. Guarde a cópia JSON em local seguro antes de prosseguir.</p></div><div class="reset-preparation"><button id="prepareSiteReset" class="mini-button primary" type="button">PREPARAR CÓPIA DE SEGURANÇA</button><div id="siteResetBackupPanel"></div></div><form id="siteResetForm" class="modal-form"><label>CONFIRME DIGITANDO REDEFINIR SITE<input name="confirmation" autocomplete="off" required></label><label>SENHA DA CONTA ADMINISTRATIVA<input name="password" type="password" autocomplete="current-password" minlength="6" required></label><p id="siteResetProgress" class="fine-print" aria-live="polite">A exclusão só será liberada após o download da cópia e a conferência da senha.</p></form>`);
+  $('#siteResetForm').onsubmit=event=>event.preventDefault();
+  $('#prepareSiteReset').onclick=()=>void prepareSiteResetBackup();
+}
+
 function openFinanceResetDialog() {
   const user=auth.currentUser;
   if(!isAdmin||!user?.email||user.isAnonymous)return toast('Entre novamente na conta administrativa para redefinir o financeiro.');
@@ -1340,11 +1526,12 @@ function renderFinanceAnalytics(el) {
   const paymentEntries=[...payments.entries()].sort((a,b)=>b[1].revenueCents-a[1].revenueCents),channelEntries=[...channels.entries()].sort((a,b)=>b[1].revenueCents-a[1].revenueCents);
   const topProducts=[...itemsByProduct.values()].sort((a,b)=>b.quantity-a.quantity).slice(0,10);
   const productRows=topProducts.map(product=>{const margin=product.costKnown?`${money(product.marginCents/100)}${product.revenueCents?` · ${((product.marginCents/product.revenueCents)*100).toFixed(1)}%`:''}`:'Cadastre o custo atual';return [htm(product.name),String(product.quantity),money(product.revenueCents/100),htm(margin)];});
-  el.innerHTML=`<div class="section-kicker">GESTÃO / FINANCEIRO</div><h2>ANÁLISE FINANCEIRA</h2><p>Relatórios de vendas encerradas, valores finais e formas de pagamento.</p><div class="finance-filters"><label>DE <input id="financeFrom" type="date" value="${htm(analyticsFrom)}"></label><label>ATÉ <input id="financeTo" type="date" value="${htm(analyticsTo)}"></label><button id="exportFinanceCsv" class="mini-button primary">BAIXAR RELATÓRIO CSV</button><button id="financeReset" class="mini-button danger">REDEFINIR FINANCEIRO</button></div>${financeBaselineAt?`<p class="fine-print">Relatórios e pedidos encerrados exibidos desde ${financeBaselineAt.toLocaleString('pt-BR')}. Dados anteriores preservados.</p>`:''}<div class="admin-cards finance-summary"><div class="metric"><span>FATURAMENTO NO PERÍODO</span><strong>${money(totalCents/100)}</strong></div><div class="metric"><span>VENDAS ENCERRADAS</span><strong>${count}</strong></div><div class="metric"><span>TICKET MÉDIO</span><strong>${money(average/100)}</strong></div></div><div class="finance-charts">${renderFinanceBars('VENDAS POR FORMA DE PAGAMENTO',paymentEntries,totalCents)}${renderFinanceBars('VENDAS POR CANAL',channelEntries,totalCents)}</div><section class="finance-panel"><h3>PRODUTOS MAIS VENDIDOS E DESEMPENHO</h3>${productRows.length?table(['PRODUTO','UNIDADES','RECEITA ALOCADA','MARGEM ESTIMADA'],productRows):'<div class="empty-state">AS VENDAS ENCERRADAS MOSTRARÃO OS PRODUTOS AQUI.</div>'}<p class="fine-print">A margem usa o custo atual cadastrado no produto, não um custo histórico gravado no pedido. Atualize os custos para melhorar a estimativa.</p></section><section class="finance-panel"><h3>RELATÓRIO DETALHADO DE VENDAS</h3>${sales.length?table(['CÓDIGO','DATA','CLIENTE','VALOR','CANAL','PAGAMENTO'],sales.map(order=>[htm(order.confirmationCode||order.id),safeDate(order.closedAt).toLocaleDateString('pt-BR'),htm(order.customerName),money(Number(order.saleTotalCents)/100),htm(order.salesChannel),htm(order.paymentMethod)])):'<div class="empty-state">NENHUMA VENDA ENCERRADA NESTE PERÍODO.</div>'}</section><p class="fine-print">A tela soma até as 250 solicitações mais recentes carregadas no painel. Use o filtro de datas; o CSV contém as vendas encerradas carregadas nesse mesmo limite.</p>`;
+  el.innerHTML=`<div class="section-kicker">GESTÃO / FINANCEIRO</div><h2>ANÁLISE FINANCEIRA</h2><p>Relatórios de vendas encerradas, valores finais e formas de pagamento.</p><div class="finance-filters"><label>DE <input id="financeFrom" type="date" value="${htm(analyticsFrom)}"></label><label>ATÉ <input id="financeTo" type="date" value="${htm(analyticsTo)}"></label><button id="exportFinanceCsv" class="mini-button primary">BAIXAR RELATÓRIO CSV</button><button id="financeReset" class="mini-button">REDEFINIR FINANCEIRO</button><button id="siteReset" class="mini-button danger">REDEFINIR SITE</button></div>${financeBaselineAt?`<p class="fine-print">Relatórios e pedidos encerrados exibidos desde ${financeBaselineAt.toLocaleString('pt-BR')}. Dados anteriores preservados.</p>`:''}<div class="admin-cards finance-summary"><div class="metric"><span>FATURAMENTO NO PERÍODO</span><strong>${money(totalCents/100)}</strong></div><div class="metric"><span>VENDAS ENCERRADAS</span><strong>${count}</strong></div><div class="metric"><span>TICKET MÉDIO</span><strong>${money(average/100)}</strong></div></div><div class="finance-charts">${renderFinanceBars('VENDAS POR FORMA DE PAGAMENTO',paymentEntries,totalCents)}${renderFinanceBars('VENDAS POR CANAL',channelEntries,totalCents)}</div><section class="finance-panel"><h3>PRODUTOS MAIS VENDIDOS E DESEMPENHO</h3>${productRows.length?table(['PRODUTO','UNIDADES','RECEITA ALOCADA','MARGEM ESTIMADA'],productRows):'<div class="empty-state">AS VENDAS ENCERRADAS MOSTRARÃO OS PRODUTOS AQUI.</div>'}<p class="fine-print">A margem usa o custo atual cadastrado no produto, não um custo histórico gravado no pedido. Atualize os custos para melhorar a estimativa.</p></section><section class="finance-panel"><h3>RELATÓRIO DETALHADO DE VENDAS</h3>${sales.length?table(['CÓDIGO','DATA','CLIENTE','VALOR','CANAL','PAGAMENTO'],sales.map(order=>[htm(order.confirmationCode||order.id),safeDate(order.closedAt).toLocaleDateString('pt-BR'),htm(order.customerName),money(Number(order.saleTotalCents)/100),htm(order.salesChannel),htm(order.paymentMethod)])):'<div class="empty-state">NENHUMA VENDA ENCERRADA NESTE PERÍODO.</div>'}</section><p class="fine-print">A tela soma até as 250 solicitações mais recentes carregadas no painel. Use o filtro de datas; o CSV contém as vendas encerradas carregadas nesse mesmo limite.</p>`;
   $('#financeFrom').onchange=event=>{analyticsFrom=event.target.value;renderFinanceAnalytics(el);};
   $('#financeTo').onchange=event=>{analyticsTo=event.target.value;renderFinanceAnalytics(el);};
   $('#exportFinanceCsv').onclick=()=>exportFinanceCsv(sales);
   $('#financeReset').onclick=openFinanceResetDialog;
+  $('#siteReset').onclick=openSiteResetDialog;
 }
 
 renderComments = function() {

@@ -38,6 +38,25 @@ service cloud.firestore {
       );
     }
 
+    function validSiteResetMarker(data) {
+      return isAdmin()
+        && data.keys().hasAll(['resetBy', 'createdAt'])
+        && data.keys().hasOnly(['resetBy', 'createdAt'])
+        && data.resetBy == request.auth.uid
+        && data.createdAt is timestamp
+        && data.createdAt == request.time
+        && request.auth.token.auth_time is int
+        && request.auth.token.auth_time >= request.time.toMillis() / 1000 - 300;
+    }
+
+    function siteResetAuthorized() {
+      let path = /databases/$(database)/documents/settings/siteReset;
+      return isAdmin() && exists(path)
+        && get(path).data.resetBy == request.auth.uid
+        && get(path).data.createdAt is timestamp
+        && request.time < get(path).data.createdAt + duration.value(10, 'm');
+    }
+
     function validCloudinaryImageUrl(value) {
       return value is string && value.size() <= 2048
         && value.matches('https://res\\.cloudinary\\.com/imc3dn7g/image/upload/.*');
@@ -49,15 +68,47 @@ service cloud.firestore {
         && !value.matches('.*//.*');
     }
 
+    function validSizeStock(value) {
+      return value is int && value >= 0 && value <= 100000;
+    }
+
+    function validStockBySize(data) {
+      return !('stockBySize' in data)
+        || (data.stockBySize is map
+          && data.stockBySize.keys().size() == data.sizes.size()
+          && data.stockBySize.keys().hasAll(data.sizes)
+          && validSizeStock(data.stockBySize[data.sizes[0]])
+          && (data.sizes.size() < 2 || validSizeStock(data.stockBySize[data.sizes[1]]))
+          && (data.sizes.size() < 3 || validSizeStock(data.stockBySize[data.sizes[2]]))
+          && (data.sizes.size() < 4 || validSizeStock(data.stockBySize[data.sizes[3]]))
+          && (data.sizes.size() < 5 || validSizeStock(data.stockBySize[data.sizes[4]]))
+          && (data.sizes.size() < 6 || validSizeStock(data.stockBySize[data.sizes[5]]))
+          && (data.sizes.size() < 7 || validSizeStock(data.stockBySize[data.sizes[6]]))
+          && (data.sizes.size() < 8 || validSizeStock(data.stockBySize[data.sizes[7]]))
+          && (data.sizes.size() < 9 || validSizeStock(data.stockBySize[data.sizes[8]]))
+          && (data.sizes.size() < 10 || validSizeStock(data.stockBySize[data.sizes[9]]))
+          && (data.sizes.size() < 11 || validSizeStock(data.stockBySize[data.sizes[10]]))
+          && (data.sizes.size() < 12 || validSizeStock(data.stockBySize[data.sizes[11]]))
+          && (data.sizes.size() < 13 || validSizeStock(data.stockBySize[data.sizes[12]]))
+          && (data.sizes.size() < 14 || validSizeStock(data.stockBySize[data.sizes[13]]))
+          && (data.sizes.size() < 15 || validSizeStock(data.stockBySize[data.sizes[14]]))
+          && (data.sizes.size() < 16 || validSizeStock(data.stockBySize[data.sizes[15]]))
+          && (data.sizes.size() < 17 || validSizeStock(data.stockBySize[data.sizes[16]]))
+          && (data.sizes.size() < 18 || validSizeStock(data.stockBySize[data.sizes[17]]))
+          && (data.sizes.size() < 19 || validSizeStock(data.stockBySize[data.sizes[18]]))
+          && (data.sizes.size() < 20 || validSizeStock(data.stockBySize[data.sizes[19]])));
+    }
+
     function validProduct(data) {
       return data.keys().hasAll(['name', 'category', 'price', 'stock', 'sizes', 'active', 'imageUrl', 'imagePublicId', 'updatedAt'])
-        && data.keys().hasOnly(['name', 'category', 'price', 'discount', 'stock', 'reservedStock', 'sizes', 'active', 'description', 'featured', 'imageUrl', 'imagePublicId', 'imageGallery', 'color', 'mark', 'seededExample', 'updatedAt', 'createdAt'])
+        && data.keys().hasOnly(['name', 'category', 'price', 'discount', 'stock', 'stockBySize', 'reservedStock', 'sizes', 'active', 'description', 'featured', 'imageUrl', 'imagePublicId', 'imageGallery', 'color', 'mark', 'seededExample', 'updatedAt', 'createdAt'])
         && data.name is string && data.name.size() > 0 && data.name.size() <= 160
         && data.category is string && data.category.size() > 0 && data.category.size() <= 80
         && data.price is number && data.price > 0 && data.price <= 100000
         && data.stock is int && data.stock >= 0 && data.stock <= 100000
         && (!('reservedStock' in data) || (data.reservedStock is int && data.reservedStock >= 0 && data.reservedStock <= 100000))
         && data.sizes is list && data.sizes.size() > 0 && data.sizes.size() <= 20
+        && validStockBySize(data)
         && data.active is bool
         && (!('discount' in data) || (data.discount is number && data.discount >= 0 && data.discount <= 99))
         && (!('description' in data) || (data.description is string && data.description.size() <= 1200))
@@ -169,7 +220,12 @@ service cloud.firestore {
         && product.active == true
         && product.name == item.name
         && product.sizes.hasAny([item.size])
-        && item.quantity <= product.stock
+        && ((('stockBySize' in product)
+          && item.size in product.stockBySize
+          && item.quantity <= product.stockBySize[item.size])
+          || (!('stockBySize' in product)
+            && item.size == product.sizes[0]
+            && item.quantity <= product.stock))
         && item.unitPriceCents == math.round(
           product.price
           * (100 - (('discount' in product) ? product.discount : 0))
@@ -183,7 +239,22 @@ service cloud.firestore {
         && (items.size() < 3 || validReservationItem(items[2]))
         && (items.size() < 4 || validReservationItem(items[3]))
         && (items.size() < 5 || validReservationItem(items[4]))
-        && (items.size() < 6 || validReservationItem(items[5]));
+        && (items.size() < 6 || validReservationItem(items[5]))
+        && (items.size() < 2 || items[0].productId != items[1].productId || items[0].size != items[1].size)
+        && (items.size() < 3 || items[0].productId != items[2].productId || items[0].size != items[2].size)
+        && (items.size() < 3 || items[1].productId != items[2].productId || items[1].size != items[2].size)
+        && (items.size() < 4 || items[0].productId != items[3].productId || items[0].size != items[3].size)
+        && (items.size() < 4 || items[1].productId != items[3].productId || items[1].size != items[3].size)
+        && (items.size() < 4 || items[2].productId != items[3].productId || items[2].size != items[3].size)
+        && (items.size() < 5 || items[0].productId != items[4].productId || items[0].size != items[4].size)
+        && (items.size() < 5 || items[1].productId != items[4].productId || items[1].size != items[4].size)
+        && (items.size() < 5 || items[2].productId != items[4].productId || items[2].size != items[4].size)
+        && (items.size() < 5 || items[3].productId != items[4].productId || items[3].size != items[4].size)
+        && (items.size() < 6 || items[0].productId != items[5].productId || items[0].size != items[5].size)
+        && (items.size() < 6 || items[1].productId != items[5].productId || items[1].size != items[5].size)
+        && (items.size() < 6 || items[2].productId != items[5].productId || items[2].size != items[5].size)
+        && (items.size() < 6 || items[3].productId != items[5].productId || items[3].size != items[5].size)
+        && (items.size() < 6 || items[4].productId != items[5].productId || items[4].size != items[5].size);
     }
 
     function validReservationTotal(data) {
@@ -565,8 +636,9 @@ service cloud.firestore {
 
     function validStockAdjustment() {
       return isAdmin()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stock', 'updatedAt'])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stock', 'stockBySize', 'updatedAt'])
         && request.resource.data.stock is int && request.resource.data.stock >= 0 && request.resource.data.stock <= 100000
+        && validStockBySize(request.resource.data)
         && request.resource.data.updatedAt is timestamp
         && (!('cost' in resource.data) || request.resource.data.cost == resource.data.cost);
     }
@@ -649,7 +721,7 @@ service cloud.firestore {
     match /categories/{categoryId} {
       allow get, list: if isAdmin() || resource.data.active == true;
       allow create, update: if isAdmin() && validCategory(request.resource.data);
-      allow delete: if false;
+      allow delete: if siteResetAuthorized();
     }
 
     match /orders/{orderId} {
@@ -670,11 +742,12 @@ service cloud.firestore {
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'statusHistory', 'updatedAt', 'stockApplied', 'stockRestored', 'confirmedAt', 'cancelledAt', 'salesChannel', 'paymentMethod', 'saleTotalCents', 'installmentCount', 'installmentValueCents', 'finalInstallmentValueCents', 'closedAt', 'couponReserved', 'couponCounted'])
           && request.resource.data.updatedAt is timestamp)
         || validOwnerCouponReservation(orderId);
-      allow delete: if false;
+      allow delete: if siteResetAuthorized();
     }
 
     match /reservationLimits/{uid} {
-      allow get, list, delete: if false;
+      allow get, list: if isAdmin();
+      allow delete: if siteResetAuthorized();
       allow create: if signedIn()
         && validReservationLimit(request.resource.data, uid)
         && reservationOrderWritten(uid, request.resource.data.lastOrderId);
@@ -738,7 +811,8 @@ service cloud.firestore {
     }
 
     match /messageLimits/{uid} {
-      allow get, list, delete: if false;
+      allow get, list: if isAdmin();
+      allow delete: if siteResetAuthorized();
       allow create: if signedIn()
         && validMessageLimit(request.resource.data, uid)
         && messageWritten(uid, request.resource.data.lastMessageId);
@@ -751,11 +825,17 @@ service cloud.firestore {
 
     match /settings/{settingId} {
       allow get: if (settingId == 'vip' && (isAdmin() || isActiveVip()))
-        || (settingId == 'finance' && isAdmin());
-      allow list: if false;
-      allow create, update: if isAdmin() && ((settingId == 'vip' && validVipSetting(request.resource.data))
-        || (settingId == 'finance' && validFinanceBaseline(request.resource.data)));
-      allow delete: if false;
+        || (settingId in ['finance', 'siteReset'] && isAdmin());
+      allow list: if isAdmin();
+      allow create: if isAdmin() && ((settingId == 'vip' && validVipSetting(request.resource.data))
+        || (settingId == 'finance' && validFinanceBaseline(request.resource.data))
+        || (settingId == 'siteReset' && !exists(/databases/$(database)/documents/settings/siteReset)
+          && validSiteResetMarker(request.resource.data)));
+      allow update: if isAdmin() && ((settingId == 'vip' && validVipSetting(request.resource.data))
+        || (settingId == 'finance' && validFinanceBaseline(request.resource.data))
+        || (settingId == 'siteReset' && validSiteResetMarker(request.resource.data)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['resetBy', 'createdAt'])));
+      allow delete: if siteResetAuthorized();
     }
 
     match /vipUsers/{uid} {
@@ -779,9 +859,11 @@ service cloud.firestore {
         && request.resource.data.email == resource.data.email
         && request.resource.data.phone == resource.data.phone
         && request.resource.data.createdAt == resource.data.createdAt;
-      // VIP deletion is allowed only together with removal of its customer profile.
+      // Normally, remove a VIP record only with its customer profile. The
+      // protected site reset can clear VIP enrollment while keeping customers.
       allow delete: if isAdmin()
-        && !existsAfter(/databases/$(database)/documents/customers/$(uid));
+        && (!existsAfter(/databases/$(database)/documents/customers/$(uid))
+          || siteResetAuthorized());
     }
 
     match /{document=**} {

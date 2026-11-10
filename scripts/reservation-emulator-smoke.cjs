@@ -39,15 +39,31 @@ async function main() {
     } }] })
   });
 
+  const sizedProductId = 'emulator-size-stock-test';
+  await request(`${firestore}:commit`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer owner', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ writes: [{ update: {
+      name: `projects/${projectId}/databases/(default)/documents/products/${sizedProductId}`,
+      fields: {
+        name: string('Produto por tamanho'), category: string('Teste'), price: integer(120), stock: integer(2),
+        stockBySize: map({ P: integer(2), M: integer(0) }), sizes: list([string('P'), string('M')]), active: boolean(true),
+        featured: boolean(false), imageUrl: string('https://res.cloudinary.com/imc3dn7g/image/upload/test.jpg'),
+        imagePublicId: string('test-size'), updatedAt: { timestampValue: '2026-01-01T00:00:00Z' },
+        createdAt: { timestampValue: '2026-01-01T00:00:00Z' }
+      }
+    } }] })
+  });
+
   const anonymous = await request(authUrl, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ returnSecureToken: true })
   });
-  async function submitReservation(session, { orderId, phone }) {
-    const subtotalCents = 12000;
+  async function submitReservation(session, { orderId, phone, productId: requestedProductId=productId, productName='Produto Smoke Test', size='Único', quantity=1, unitPriceCents=12000 }) {
+    const subtotalCents = unitPriceCents * quantity;
     const orderFields = {
       uid: string(session.localId), confirmationCode: string(`GSMOKE${orderId}`), customerName: string('Teste Retirada'), phone: string(phone),
-      items: list([map({ productId: string(productId), name: string('Produto Smoke Test'), size: string('Único'), quantity: integer(1), unitPriceCents: integer(subtotalCents) })]),
+      items: list([map({ productId: string(requestedProductId), name: string(productName), size: string(size), quantity: integer(quantity), unitPriceCents: integer(unitPriceCents) })]),
       totalCents: integer(subtotalCents), deliveryMethod: string('Retirada'), address: map({}), pickupDetails: string(''), notes: string(''),
       marketingConsent: boolean(false), status: string('Aguardando confirmação'), statusHistory: list([string('Aguardando confirmação')]),
       stockApplied: boolean(false), stockRestored: boolean(false)
@@ -62,6 +78,13 @@ async function main() {
   }
   await submitReservation(anonymous, { orderId: 'pickup-smoke-order-01', phone: '63999887766' });
   process.stdout.write('PASS: cliente anônimo gravou uma solicitação com retirada local e endereço vazio.\n');
+  await submitReservation(anonymous, { orderId: 'size-stock-order-01', phone: '63999887765', productId: sizedProductId, productName: 'Produto por tamanho', size: 'P', quantity: 2, unitPriceCents: 12000 });
+  process.stdout.write('PASS: estoque disponível por tamanho aceitou a quantidade válida.\n');
+  let soldOutSizeRejected = false;
+  try { await submitReservation(anonymous, { orderId: 'size-stock-order-02', phone: '63999887764', productId: sizedProductId, productName: 'Produto por tamanho', size: 'M', quantity: 1, unitPriceCents: 12000 }); }
+  catch (error) { soldOutSizeRejected = /403/.test(error.message); }
+  if (!soldOutSizeRejected) throw new Error('o emulador não recusou a reserva de um tamanho sem estoque.');
+  process.stdout.write('PASS: tamanho sem unidades disponíveis foi recusado pelas regras.\n');
 
   const email = 'vip-smoke@example.test', password = 'SmokePass123!';
   let member = await request(authUrl, {
@@ -139,6 +162,22 @@ async function main() {
   try { await commit(anonymous.idToken, [resetFinance]); } catch (error) { nonAdminRejected = /403/.test(error.message); }
   if (!nonAdminRejected) throw new Error('o emulador permitiu reset financeiro sem sessão administrativa.');
   process.stdout.write('PASS: visitante não pode redefinir o marco financeiro.\n');
+
+  const protectedOrderPath = `projects/${projectId}/databases/(default)/documents/orders/pickup-smoke-order-01`;
+  let orderDeleteRejected = false;
+  try { await commit(member.idToken, [{ delete: protectedOrderPath }]); }
+  catch (error) { orderDeleteRejected = /403/.test(error.message); }
+  if (!orderDeleteRejected) throw new Error('o emulador permitiu apagar um pedido sem o marcador de redefinição.');
+  process.stdout.write('PASS: pedido continua protegido fora da redefinição.\n');
+  const resetMarkerPath = `projects/${projectId}/databases/(default)/documents/settings/siteReset`;
+  await commit(member.idToken, [{ update: { name: resetMarkerPath, fields: { resetBy: string(member.localId) } }, updateTransforms: [{ fieldPath: 'createdAt', setToServerValue: 'REQUEST_TIME' }] }]);
+  const resetOrderPaths=['pickup-smoke-order-01','size-stock-order-01','vip-smoke-order-01','coupon-smoke-order-01'].map(id=>`projects/${projectId}/databases/(default)/documents/orders/${id}`);
+  await commit(member.idToken, resetOrderPaths.map(name=>({ delete: name })));
+  await commit(member.idToken, [{ delete: `projects/${projectId}/databases/(default)/documents/vipUsers/${member.localId}` }]);
+  const customerCheck = await request(`${firestore}/customers/${member.localId}`, { headers: { Authorization: 'Bearer owner' } });
+  if (!customerCheck.name) throw new Error('a redefinição de teste removeu a ficha do cliente.');
+  await commit(member.idToken, [{ delete: resetMarkerPath }]);
+  process.stdout.write('PASS: marcador recente autoriza o reset, remove VIP/pedido e preserva a ficha de cliente.\n');
 }
 
 main().catch(error => { process.stderr.write(`FAIL: ${error.message}\n`); process.exitCode = 1; });
