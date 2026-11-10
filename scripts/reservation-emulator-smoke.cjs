@@ -178,6 +178,33 @@ async function main() {
   if (!customerCheck.name) throw new Error('a redefinição de teste removeu a ficha do cliente.');
   await commit(member.idToken, [{ delete: resetMarkerPath }]);
   process.stdout.write('PASS: marcador recente autoriza o reset, remove VIP/pedido e preserva a ficha de cliente.\n');
+
+  const contactId='admin-contact-smoke-01',contactEmail='admin-smoke@example.test';
+  await commit('owner',[
+    {update:{name:`projects/${projectId}/databases/(default)/documents/messages/${contactId}`,fields:{uid:string(member.localId),name:string('Contato de teste'),email:string(contactEmail),subject:string('Teste de limpeza'),message:string('Mensagem de contato para teste.'),status:string('Nova')}},updateTransforms:[{fieldPath:'createdAt',setToServerValue:'REQUEST_TIME'},{fieldPath:'updatedAt',setToServerValue:'REQUEST_TIME'}]},
+    {update:{name:`projects/${projectId}/databases/(default)/documents/messageLimits/${contactEmail}`,fields:{email:string(contactEmail),lastMessageId:string(contactId)}},updateTransforms:[{fieldPath:'lastSubmittedAt',setToServerValue:'REQUEST_TIME'}]}
+  ]);
+  await commit(member.idToken,[{delete:`projects/${projectId}/databases/(default)/documents/messages/${contactId}`}]);
+  const messageAfterDelete=await fetch(`${firestore}/messages/${contactId}`,{headers:{Authorization:`Bearer ${member.idToken}`}});
+  const limiterAfterDelete=await request(`${firestore}/messageLimits/${contactEmail}`,{headers:{Authorization:`Bearer ${member.idToken}`}});
+  if(messageAfterDelete.status!==404||!limiterAfterDelete.name)throw new Error('a limpeza de contatos removeu o limitador ou deixou a mensagem de teste.');
+  process.stdout.write('PASS: exclusão da mensagem de contato preservou o limitador contra abuso.\n');
+
+  const vipPath=`projects/${projectId}/databases/(default)/documents/vipUsers/${member.localId}`;
+  await commit(member.idToken,[{update:{name:vipPath,fields:{uid:string(member.localId),name:string('Cliente Teste'),email:string(email),phone:string('63999111222'),status:string('active')}},updateTransforms:[{fieldPath:'createdAt',setToServerValue:'REQUEST_TIME'},{fieldPath:'updatedAt',setToServerValue:'REQUEST_TIME'}]}]);
+  let orphanProfileRejected=false;
+  try{await commit(member.idToken,[{delete:`projects/${projectId}/databases/(default)/documents/customers/${member.localId}`}]);}
+  catch(error){orphanProfileRejected=/403/.test(error.message);}
+  if(!orphanProfileRejected)throw new Error('o emulador permitiu remover perfil sem remover o VIP associado.');
+  await commit(member.idToken,[
+    {delete:`projects/${projectId}/databases/(default)/documents/customers/${member.localId}`},
+    {delete:vipPath}
+  ]);
+  const signedInAfterReset=await request(`${accountsUrl}/accounts:signInWithPassword?key=fake-api-key`,{
+    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password,returnSecureToken:true})
+  });
+  if(signedInAfterReset.localId!==member.localId)throw new Error('a redefinição de perfil removeu também a conta de login.');
+  process.stdout.write('PASS: redefinição em lote removeu perfil e VIP juntos, mantendo o login Firebase.\n');
 }
 
 main().catch(error => { process.stderr.write(`FAIL: ${error.message}\n`); process.exitCode = 1; });

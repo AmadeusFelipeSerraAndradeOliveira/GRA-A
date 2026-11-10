@@ -6,7 +6,7 @@ const root = path.resolve(__dirname);
 const rootPrefix = `${root}${path.sep}`;
 const port = Number(process.env.PORT || 5501);
 const blockedRoots = new Set([
-  '.git', '.firebase', 'node_modules', 'functions', 'cloudinary-worker', 'scripts',
+  '.git', '.firebase', 'node_modules', 'functions', 'cloudinary-worker', 'cloudflare-push', 'scripts',
   'firebase.json', 'firestore.rules', 'firestore.indexes.json', '.firebaserc',
   '.gitignore', 'package.json', 'package-lock.json', 'README.md', 'FIRESTORE_RULES_REVIEW.md'
 ]);

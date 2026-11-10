@@ -21,6 +21,7 @@ import {
 import app from "./firebase.js";
 import { exampleProductTemplates } from "./catalog-seed.js";
 import { CLOUDINARY_CONFIG } from "./cloudinary-config.js";
+import { enableAdminPush, isAdminPushConfigured, notifyAdminPushForOrder } from "./admin-push.js";
 
 /* GRAÇA GMC · vitrine, reservas e gestão operacional no Firebase. */
 const auth = getAuth(app);
@@ -217,6 +218,7 @@ let adminProductSearch = '';
 let adminVipSearch = '';
 let financeBaselineAt = null;
 let pendingSiteReset = null;
+let pendingProtectedBulkDelete = null;
 let vipUsers = [];
 let vipInviteUrl = '';
 let appliedCartCoupon = null;
@@ -398,9 +400,6 @@ function adminReservationAlertLink(code) {
 function notifyAdminOfNewReservation(order) {
   const label=`Nova reserva ${order.confirmationCode||order.id} · ${order.customerName||'cliente'}`;
   toast(label);
-  if(typeof Notification!=='undefined'&&Notification.permission==='granted'){
-    try{new Notification('GRAÇA · Nova solicitação de reserva',{body:label,icon:'/assets/graca-editorial-background.jfif'});}catch{}
-  }
 }
 
 function updateCatalogSubscriptions() {
@@ -719,6 +718,7 @@ checkout = function() {
       if(!orderId){orderId=doc(collection(db,'orders')).id;set('pendingReservation',{fingerprint:cartFingerprint,uid:user.uid,orderId});}
       const savedOrder=await createReservationRequest({orderId,uid:user.uid,customerName:name,phone,items,totalCents:totals.subtotalCents,subtotalCents:totals.subtotalCents,discountCents:totals.discountCents,couponCode:coupon?.code||'',couponPercent:coupon?.value||0,deliveryMethod,address:addressData,pickupDetails:String(form.get('pickupDetails')||'').trim().slice(0,160),notes:String(form.get('notes')||'').trim().slice(0,500),marketingConsent:form.get('marketingConsent')==='on'});
       if(!savedOrder?.orderId||!savedOrder?.confirmationCode)throw new Error('A solicitação não retornou uma confirmação válida. Tente novamente.');
+      void notifyAdminPushForOrder(savedOrder.orderId,user).catch(error=>console.warn('A reserva foi salva, mas o aviso externo não pôde ser enviado:',error));
       cart=[];cartCoupon='';set('cart',cart);set('cartCoupon','');renderCart();
       appliedCartCoupon=null;
       localStorage.removeItem('graca_pendingReservation');
@@ -1002,9 +1002,10 @@ async function importExampleProducts() {
 
 function renderAdminMessages() {
   const rows=messages.map(message=>`<tr><td>${safeDate(message.createdAt).toLocaleString('pt-BR')}</td><td>${htm(message.name)}</td><td><a href="mailto:${htm(message.email)}">${htm(message.email)}</a></td><td>${htm(message.phone||'—')}</td><td>${messageWhatsappLink(message)}</td><td>${htm(message.subject)}</td><td>${htm(message.message)}</td><td><select data-message-status="${htm(message.id)}"><option ${message.status==='Nova'?'selected':''}>Nova</option><option ${message.status==='Em atendimento'?'selected':''}>Em atendimento</option><option ${message.status==='Concluída'?'selected':''}>Concluída</option></select></td><td><button class="mini-button danger" data-delete-message="${htm(message.id)}">EXCLUIR</button></td></tr>`).join('');
-  $('#adminContent').innerHTML=`<div class="section-kicker">ATENDIMENTO / TEMPO REAL</div><h2>MENSAGENS DE CONTATO</h2>${rows?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>DATA</th><th>NOME</th><th>E-MAIL</th><th>WHATSAPP</th><th>AÇÃO</th><th>ASSUNTO</th><th>MENSAGEM</th><th>STATUS</th><th>AÇÕES</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty-state">NENHUMA MENSAGEM RECEBIDA.</div>'}`;
+  $('#adminContent').innerHTML=`<div class="section-kicker">ATENDIMENTO / TEMPO REAL</div><h2>MENSAGENS DE CONTATO</h2><div class="admin-toolbar"><span>${messages.length} contato(s) registrado(s). Os limitadores de envio serão preservados.</span><button class="mini-button danger" id="deleteAllContacts" ${messages.length?'':'disabled'}>EXCLUIR TODOS OS CONTATOS</button></div>${rows?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>DATA</th><th>NOME</th><th>E-MAIL</th><th>WHATSAPP</th><th>AÇÃO</th><th>ASSUNTO</th><th>MENSAGEM</th><th>STATUS</th><th>AÇÕES</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty-state">NENHUMA MENSAGEM RECEBIDA.</div>'}`;
   $$('[data-message-status]').forEach(select=>select.onchange=async()=>{const message=messages.find(item=>item.id===select.dataset.messageStatus);if(!message)return;select.disabled=true;try{await updateDoc(doc(db,'messages',message.id),{status:select.value,updatedAt:serverTimestamp()});}catch(error){toast(friendlyFirestoreError(error));select.disabled=false;}});
   $$('[data-delete-message]').forEach(button=>button.onclick=()=>deleteAdminMessage(button.dataset.deleteMessage));
+  $('#deleteAllContacts').onclick=()=>openProtectedBulkDeleteDialog('messages');
 }
 
 async function deleteAdminMessage(messageId) {
@@ -1045,10 +1046,11 @@ function renderAdminCustomers() {
   const digitsNeedle=normalizeBrazilPhone(adminVipSearch);
   const filteredVisitors=getAdminPassersby().filter(visitor=>`${visitor.name} ${visitor.phone} ${visitor.latest.confirmationCode||visitor.latest.id} ${visitor.latest.status||''}`.toLowerCase().includes(needle)||(digitsNeedle.length>=4&&normalizeBrazilPhone(visitor.phone).includes(digitsNeedle)));
   const visitorRows=filteredVisitors.map(visitor=>[htm(visitor.name),htm(visitor.phone||'—'),`${visitor.count} solicitação(ões)`,`${htm(visitor.latest.confirmationCode||visitor.latest.id)} · ${htm(visitor.latest.status||'')}`,safeDate(visitor.latest.createdAt).toLocaleDateString('pt-BR'),whatsappLink(visitor.latest)]);
-  $('#adminContent').innerHTML=`<div class="section-kicker">CLIENTES / COMUNIDADE VIP</div><h2>CLIENTES E MEMBROS VIP</h2><p>Remover VIP desativa a associação sem apagar o cliente. Excluir a ficha do cliente também remove a associação VIP; pedidos e histórico financeiro permanecem.</p><div class="admin-toolbar"><span>${customers.length} contas · ${vipUsers.filter(member=>member.status==='active').length} membros VIP ativos · ${getAdminPassersby().length} passantes</span><div><button id="vipInviteSetup" class="mini-button">CONFIGURAR LINK DO GRUPO</button> <button id="newVipMember" class="mini-button primary">+ CADASTRAR VIP</button></div></div><div class="admin-filter-bar"><label>BUSCAR CLIENTE OU PASSANTE POR NOME, E-MAIL, TELEFONE OU PEDIDO<input id="adminVipSearch" type="search" value="${htm(adminVipSearch)}" placeholder="Digite nome, e-mail, telefone ou código"></label></div><section class="finance-panel"><h3>MEMBROS VIP · ${filteredVip.length}</h3>${filteredVip.length?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>NOME</th><th>E-MAIL</th><th>WHATSAPP</th><th>ACESSO</th><th>CADASTRO</th><th>AÇÕES</th></tr></thead><tbody>${vipRows}</tbody></table></div>`:'<div class="empty-state">NENHUM MEMBRO VIP CORRESPONDE À BUSCA.</div>'}</section><section class="finance-panel"><h3>CONTAS CADASTRADAS · ${filteredCustomers.length}</h3>${filteredCustomers.length?table(['NOME','E-MAIL','WHATSAPP','OFERTAS','CADASTRO','AÇÕES'],customerRows):'<div class="empty-state">NENHUMA CONTA CADASTRADA CORRESPONDE À BUSCA.</div>'}</section><section class="finance-panel"><h3>PASSANTES COM SOLICITAÇÕES · ${filteredVisitors.length}</h3>${filteredVisitors.length?table(['NOME','WHATSAPP','RESERVAS','ÚLTIMA SOLICITAÇÃO','DATA','CONTATO'],visitorRows):'<div class="empty-state">NENHUM PASSANTE COM RESERVA CORRESPONDE À BUSCA.</div>'}<p class="fine-print">A busca considera até 500 contas e as 250 solicitações mais recentes sincronizadas pelo painel.</p></section>`;
+  $('#adminContent').innerHTML=`<div class="section-kicker">CLIENTES / COMUNIDADE VIP</div><h2>CLIENTES E MEMBROS VIP</h2><p>Remover VIP desativa a associação sem apagar o cliente. Excluir a ficha do cliente também remove a associação VIP; pedidos e histórico financeiro permanecem.</p><div class="admin-toolbar"><span>${customers.length} contas · ${vipUsers.filter(member=>member.status==='active').length} membros VIP ativos · ${getAdminPassersby().length} passantes</span><div><button id="vipInviteSetup" class="mini-button">CONFIGURAR LINK DO GRUPO</button> <button id="newVipMember" class="mini-button primary">+ CADASTRAR VIP</button></div></div><div class="admin-filter-bar"><label>BUSCAR CLIENTE OU PASSANTE POR NOME, E-MAIL, TELEFONE OU PEDIDO<input id="adminVipSearch" type="search" value="${htm(adminVipSearch)}" placeholder="Digite nome, e-mail, telefone ou código"></label></div><section class="finance-panel"><h3>MEMBROS VIP · ${filteredVip.length}</h3>${filteredVip.length?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>NOME</th><th>E-MAIL</th><th>WHATSAPP</th><th>ACESSO</th><th>CADASTRO</th><th>AÇÕES</th></tr></thead><tbody>${vipRows}</tbody></table></div>`:'<div class="empty-state">NENHUM MEMBRO VIP CORRESPONDE À BUSCA.</div>'}</section><section class="finance-panel"><div class="admin-toolbar"><h3>CONTAS CADASTRADAS · ${filteredCustomers.length}</h3><button class="mini-button danger" id="resetCustomerProfiles" ${(customers.length||vipUsers.length)?'':'disabled'}>REDEFINIR PERFIS E VIPS</button></div><p class="fine-print">Remove fichas e associações VIP depois de baixar uma cópia. As contas de login do Firebase Auth permanecem ativas.</p>${filteredCustomers.length?table(['NOME','E-MAIL','WHATSAPP','OFERTAS','CADASTRO','AÇÕES'],customerRows):'<div class="empty-state">NENHUMA CONTA CADASTRADA CORRESPONDE À BUSCA.</div>'}</section><section class="finance-panel"><h3>PASSANTES COM SOLICITAÇÕES · ${filteredVisitors.length}</h3>${filteredVisitors.length?table(['NOME','WHATSAPP','RESERVAS','ÚLTIMA SOLICITAÇÃO','DATA','CONTATO'],visitorRows):'<div class="empty-state">NENHUM PASSANTE COM RESERVA CORRESPONDE À BUSCA.</div>'}<p class="fine-print">A busca considera até 500 contas e as 250 solicitações mais recentes sincronizadas pelo painel.</p></section>`;
   $('#adminVipSearch').oninput=event=>{adminVipSearch=event.target.value;renderAdminCustomers();const input=$('#adminVipSearch');input?.focus();input?.setSelectionRange(adminVipSearch.length,adminVipSearch.length);};
   $('#vipInviteSetup').onclick=configureVipInvite;
   $('#newVipMember').onclick=manualVipEditor;
+  $('#resetCustomerProfiles').onclick=()=>openProtectedBulkDeleteDialog('customers');
   $$('[data-vip-status]').forEach(button=>button.onclick=()=>updateVipMemberStatus(button.dataset.vipStatus,button.dataset.nextStatus));
   $$('[data-delete-customer]').forEach(button=>button.onclick=()=>deleteCustomerRecord(button.dataset.deleteCustomer));
 }
@@ -1060,6 +1062,141 @@ async function deleteCustomerRecord(uid) {
   if(!confirm(`Excluir a ficha de ${label} e sua associação VIP, se houver? A conta de login, os pedidos e o histórico financeiro permanecerão. Esta ação não pode ser desfeita.`))return;
   try{const batch=writeBatch(db);batch.delete(doc(db,'customers',uid));batch.delete(doc(db,'vipUsers',uid));await batch.commit();toast('Ficha do cliente e associação VIP excluídas. Conta de login e pedidos foram preservados.');}
   catch(error){console.error(error);toast(friendlyFirestoreError(error));}
+}
+
+function bulkDeleteSettings(kind) {
+  if(kind==='messages')return {
+    title:'EXCLUIR TODOS OS CONTATOS.',
+    phrase:'EXCLUIR TODOS OS CONTATOS',
+    collections:['messages'],
+    warning:'Esta ação apaga todas as mensagens e contatos do painel. Os limitadores de envio serão mantidos, e contas de clientes, pedidos e logins não serão alterados.'
+  };
+  return {
+    title:'REDEFINIR PERFIS E VIPS.',
+    phrase:'REDEFINIR PERFIS E VIPS',
+    collections:['customers','vipUsers'],
+    warning:'Esta ação apaga as fichas de clientes do Firestore e todas as associações VIP. As contas de login no Firebase Authentication continuam existindo, mas os dados de perfil e os vínculos VIP serão removidos.'
+  };
+}
+
+async function collectProtectedBulkDeleteSnapshot(kind) {
+  const names=bulkDeleteSettings(kind).collections;
+  const snapshots=await Promise.all(names.map(name=>getDocs(collection(db,name))));
+  return Object.fromEntries(names.map((name,index)=>[name,snapshots[index].docs]));
+}
+
+function protectedBulkDeleteCount(snapshot) {
+  return Object.values(snapshot).reduce((total,documents)=>total+documents.length,0);
+}
+
+function protectedBulkSnapshotUnchanged(previous,current) {
+  return Object.keys(previous||{}).every(name=>{
+    const before=previous[name]||[],after=current[name]||[];
+    if(before.length!==after.length)return false;
+    const values=new Map(after.map(item=>[item.id,JSON.stringify(serializeResetValue(item.data()))]));
+    return before.every(item=>values.get(item.id)===JSON.stringify(serializeResetValue(item.data())));
+  });
+}
+
+function renderProtectedBulkBackup(snapshot,{changed=false}={}) {
+  if(pendingProtectedBulkDelete?.downloadUrl)URL.revokeObjectURL(pendingProtectedBulkDelete.downloadUrl);
+  const kind=pendingProtectedBulkDelete?.kind,settings=bulkDeleteSettings(kind),user=auth.currentUser;
+  const payload={
+    project:'GRAÇA | Gente, Moda e Comunidade',
+    exportedAt:new Date().toISOString(),
+    action:kind==='messages'?'Exclusão de mensagens de contato':'Redefinição de perfis e associações VIP',
+    notice:kind==='messages'?'As mensagens serão apagadas; limitadores de envio, clientes e pedidos serão preservados.':'Os perfis e vínculos VIP serão apagados; contas do Firebase Authentication, pedidos e histórico financeiro serão preservados.',
+    collections:Object.fromEntries(settings.collections.map(name=>[name,(snapshot[name]||[]).map(item=>({id:item.id,data:serializeResetValue(item.data())}))]))
+  };
+  const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json;charset=utf-8'});
+  const downloadUrl=URL.createObjectURL(blob),filename=`graca-copia-${kind}-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
+  pendingProtectedBulkDelete={kind,snapshot,downloadUrl,filename,backupDownloaded:false,userId:user?.uid||''};
+  const total=protectedBulkDeleteCount(snapshot);
+  const counts=settings.collections.map(name=>`${name}: ${(snapshot[name]||[]).length}`).join(' · ');
+  const panel=$('#protectedBulkBackupPanel');if(!panel)return;
+  if(total===0){panel.innerHTML='<div class="empty-state">Não há registros para apagar. Nenhum dado foi alterado.</div>';return;}
+  panel.innerHTML=`<div class="reset-backup-ready"><strong>${changed?'Os registros mudaram após a cópia anterior.':'Cópia de segurança pronta.'}</strong><p>${total} registro(s) nesta ação. Baixe a cópia mais recente antes de continuar.</p><p class="fine-print">${htm(counts)}</p><a class="mini-button primary" id="downloadProtectedBulkBackup" href="${downloadUrl}" download="${htm(filename)}">BAIXAR CÓPIA JSON</a><p id="protectedBulkBackupStatus" class="fine-print" aria-live="polite">Confira se o arquivo foi salvo antes de continuar.</p><button class="mini-button danger" id="confirmProtectedBulkDelete" type="button" disabled>${kind==='messages'?'EXCLUIR TODOS OS CONTATOS':'REDEFINIR PERFIS E VIPS'}</button></div>`;
+  $('#downloadProtectedBulkBackup').onclick=()=>{
+    if(!pendingProtectedBulkDelete)return;
+    pendingProtectedBulkDelete.backupDownloaded=true;
+    $('#protectedBulkBackupStatus').textContent='Download iniciado. Confira se o arquivo foi salvo antes de apagar os registros.';
+    $('#confirmProtectedBulkDelete').disabled=false;
+  };
+  $('#confirmProtectedBulkDelete').onclick=()=>void executeProtectedBulkDelete();
+}
+
+async function prepareProtectedBulkDelete() {
+  const button=$('#prepareProtectedBulkDelete'),panel=$('#protectedBulkBackupPanel');
+  if(!isAdmin||!auth.currentUser?.email||auth.currentUser.isAnonymous)return toast('Entre novamente na conta administrativa para continuar.');
+  button.disabled=true;button.textContent='PREPARANDO CÓPIA…';panel.innerHTML='<p class="fine-print">Carregando os registros selecionados…</p>';
+  try{
+    if(!await hasAdminAccess(auth.currentUser))throw new Error('Esta conta não possui autorização administrativa.');
+    const snapshot=await collectProtectedBulkDeleteSnapshot(pendingProtectedBulkDelete.kind);
+    renderProtectedBulkBackup(snapshot);
+  }catch(error){console.error('Falha ao preparar cópia antes da limpeza:',error);panel.innerHTML=`<p class="stock-sold-out">Não foi possível preparar a cópia: ${htm(friendlyFirestoreError(error))}</p>`;}
+  finally{button.disabled=false;button.textContent='PREPARAR CÓPIA DE SEGURANÇA';}
+}
+
+async function executeProtectedBulkDelete() {
+  const pending=pendingProtectedBulkDelete,form=$('#protectedBulkDeleteForm'),button=$('#confirmProtectedBulkDelete');
+  if(!pending||!pending.backupDownloaded||!form||!button)return toast('Baixe a cópia de segurança antes de continuar.');
+  const settings=bulkDeleteSettings(pending.kind),values=new FormData(form);
+  const confirmation=String(values.get('confirmation')||'').trim(),password=String(values.get('password')||'');
+  if(confirmation!==settings.phrase)return toast(`Digite exatamente ${settings.phrase} para confirmar.`);
+  if(!password)return toast('Digite a senha da conta administrativa.');
+  const status=$('#protectedBulkDeleteProgress');button.disabled=true;button.textContent='CONFERINDO E APAGANDO…';
+  try{
+    const user=auth.currentUser;
+    if(!user||user.uid!==pending.userId||!user.email||user.isAnonymous)throw new Error('A sessão administrativa mudou. Prepare uma nova cópia e tente novamente.');
+    await reauthenticateWithCredential(user,EmailAuthProvider.credential(user.email,password));
+    if(!await hasAdminAccess(user))throw new Error('Esta conta não possui autorização administrativa.');
+    const current=await collectProtectedBulkDeleteSnapshot(pending.kind);
+    if(!protectedBulkSnapshotUnchanged(pending.snapshot,current)){
+      renderProtectedBulkBackup(current,{changed:true});
+      status.textContent='A cópia foi atualizada porque os registros mudaram. Baixe a cópia nova antes de prosseguir.';
+      return;
+    }
+    await getIdToken(user,true);
+    let units=[];
+    if(pending.kind==='messages')units=(pending.snapshot.messages||[]).map(item=>[item.ref]);
+    else{
+      const byUid=new Map();
+      for(const item of pending.snapshot.customers||[])byUid.set(item.id,{uid:item.id,customer:item.ref,vip:null});
+      for(const item of pending.snapshot.vipUsers||[]){const currentUser=byUid.get(item.id)||{uid:item.id,customer:null,vip:null};currentUser.vip=item.ref;byUid.set(item.id,currentUser);}
+      units=[...byUid.values()].map(item=>[item.customer,item.vip].filter(Boolean));
+    }
+    const batchSize=4;let removed=0,total=units.length;
+    for(let offset=0;offset<units.length;offset+=batchSize){
+      const batch=writeBatch(db),chunk=units.slice(offset,offset+batchSize);
+      chunk.flat().forEach(reference=>batch.delete(reference));
+      await batch.commit();removed+=chunk.length;
+      if(status)status.textContent=`Removendo registros: ${removed} de ${total}.`;
+    }
+    const remaining=await collectProtectedBulkDeleteSnapshot(pending.kind);
+    if(protectedBulkDeleteCount(remaining)>0){
+      renderProtectedBulkBackup(remaining,{changed:true});
+      status.textContent='Novos registros chegaram durante a limpeza. Baixe uma nova cópia para continuar.';
+      return;
+    }
+    if(pending.downloadUrl)URL.revokeObjectURL(pending.downloadUrl);
+    pendingProtectedBulkDelete=null;closeModal();
+    toast(pending.kind==='messages'?'Todos os contatos foram excluídos. Os limitadores foram preservados.':'Perfis e vínculos VIP foram redefinidos. As contas de login continuam ativas.');
+  }catch(error){
+    console.error('Falha na exclusão protegida:',error);
+    if(status)status.textContent=`A operação parou. A cópia baixada permanece disponível. ${friendlyFirestoreError(error)}`;
+    toast(error?.code==='auth/invalid-credential'||error?.code==='auth/wrong-password'?'A senha não confere. Nenhum outro registro foi apagado.':friendlyFirestoreError(error));
+    button.disabled=false;button.textContent=pending.kind==='messages'?'EXCLUIR TODOS OS CONTATOS':'REDEFINIR PERFIS E VIPS';
+  }
+}
+
+function openProtectedBulkDeleteDialog(kind) {
+  if(!isAdmin||!auth.currentUser?.email||auth.currentUser.isAnonymous)return toast('Entre novamente na conta administrativa para continuar.');
+  if(pendingProtectedBulkDelete?.downloadUrl)URL.revokeObjectURL(pendingProtectedBulkDelete.downloadUrl);
+  const settings=bulkDeleteSettings(kind);
+  pendingProtectedBulkDelete={kind,userId:auth.currentUser.uid};
+  openModal(`<div class="section-kicker">ADMINISTRAÇÃO / LIMPEZA PROTEGIDA</div><h2 id="modalTitle">${htm(settings.title)}</h2><div class="site-reset-warning"><strong>Esta exclusão é permanente.</strong><p>${htm(settings.warning)}</p><p>Primeiro será criada uma cópia JSON. A exclusão exige baixar essa cópia, digitar a frase de confirmação e informar a senha administrativa. Se os dados mudarem durante a preparação, uma nova cópia será exigida.</p></div><div class="reset-preparation"><button id="prepareProtectedBulkDelete" class="mini-button primary" type="button">PREPARAR CÓPIA DE SEGURANÇA</button><div id="protectedBulkBackupPanel"></div></div><form id="protectedBulkDeleteForm" class="modal-form"><label>CONFIRME DIGITANDO ${htm(settings.phrase)}<input name="confirmation" autocomplete="off" required></label><label>SENHA DA CONTA ADMINISTRATIVA<input name="password" type="password" autocomplete="current-password" minlength="6" required></label><p id="protectedBulkDeleteProgress" class="fine-print" aria-live="polite">Nenhum registro será apagado antes da cópia, da confirmação e da senha.</p></form>`);
+  $('#protectedBulkDeleteForm').onsubmit=event=>event.preventDefault();
+  $('#prepareProtectedBulkDelete').onclick=()=>void prepareProtectedBulkDelete();
 }
 
 async function configureVipInvite() {
@@ -1304,12 +1441,17 @@ function renderAdminOverview(el) {
   const pending=orders.filter(order=>order.status==='Aguardando confirmação').length;
   const inProgress=orders.filter(order=>['Reserva confirmada','Em preparação','Disponível para retirada','Em rota de entrega','Entregue'].includes(order.status)).length;
   const recent=orders.filter(isVisibleAfterFinanceReset).slice(0,8);
-  el.innerHTML=`<div class="section-kicker">GRAÇA / PAINEL</div><h2>VISÃO GERAL</h2><p>Atalhos e indicadores da operação diária.</p><div class="admin-cards"><div class="metric"><span>PRODUTOS PUBLICADOS</span><strong>${activeProducts().length}</strong></div><div class="metric"><span>AGUARDANDO CONFIRMAÇÃO</span><strong>${pending}</strong></div><div class="metric"><span>EM ATENDIMENTO</span><strong>${inProgress}</strong></div><div class="metric"><span>CONTAS VIP</span><strong>${customers.length}</strong></div></div><div class="admin-toolbar"><div class="admin-shortcuts"><button class="mini-button primary" data-admin-shortcut="orders">ABRIR PEDIDOS</button><button class="mini-button" data-admin-shortcut="products">GERENCIAR PRODUTOS</button><button class="mini-button" data-admin-shortcut="analytics">ABRIR FINANCEIRO</button></div><button class="mini-button" id="enableAdminAlerts">ATIVAR AVISOS NESTE DISPOSITIVO</button></div><h3>ÚLTIMAS SOLICITAÇÕES</h3>${recent.length?table(['CÓDIGO','CLIENTE','DATA','VALOR ESTIMADO','STATUS'],recent.map(order=>[htm(order.confirmationCode||order.id),htm(order.customerName),safeDate(order.createdAt).toLocaleDateString('pt-BR'),money(displayTotal(order)),htm(order.status)])):'<div class="empty-state">AS NOVAS SOLICITAÇÕES APARECERÃO AQUI EM TEMPO REAL.</div>'}<p class="fine-print">Com a aba do painel aberta, novas solicitações atualizam esta tela e geram um aviso neste navegador. O botão de WhatsApp abre uma mensagem pronta, que ainda precisa ser enviada pela pessoa que reservou.</p>`;
+  const pushConfigured=isAdminPushConfigured();
+  el.innerHTML=`<div class="section-kicker">GRAÇA / PAINEL</div><h2>VISÃO GERAL</h2><p>Atalhos e indicadores da operação diária.</p><div class="admin-cards"><div class="metric"><span>PRODUTOS PUBLICADOS</span><strong>${activeProducts().length}</strong></div><div class="metric"><span>AGUARDANDO CONFIRMAÇÃO</span><strong>${pending}</strong></div><div class="metric"><span>EM ATENDIMENTO</span><strong>${inProgress}</strong></div><div class="metric"><span>CONTAS VIP</span><strong>${customers.length}</strong></div></div><div class="admin-toolbar"><div class="admin-shortcuts"><button class="mini-button primary" data-admin-shortcut="orders">ABRIR PEDIDOS</button><button class="mini-button" data-admin-shortcut="products">GERENCIAR PRODUTOS</button><button class="mini-button" data-admin-shortcut="analytics">ABRIR FINANCEIRO</button></div><button class="mini-button" id="enableAdminAlerts">${pushConfigured?'ATIVAR AVISOS EM SEGUNDO PLANO':'CONFIGURAR AVISOS EM SEGUNDO PLANO'}</button></div><h3>ÚLTIMAS SOLICITAÇÕES</h3>${recent.length?table(['CÓDIGO','CLIENTE','DATA','VALOR ESTIMADO','STATUS'],recent.map(order=>[htm(order.confirmationCode||order.id),htm(order.customerName),safeDate(order.createdAt).toLocaleDateString('pt-BR'),money(displayTotal(order)),htm(order.status)])):'<div class="empty-state">AS NOVAS SOLICITAÇÕES APARECERÃO AQUI EM TEMPO REAL.</div>'}<p class="fine-print">${pushConfigured?'Com o serviço conectado e este dispositivo inscrito, os avisos podem chegar mesmo com o painel fechado.':'PENDENTE: avisos com o painel fechado ainda exigem conectar o OneSignal e publicar o serviço externo. Até essa configuração, os pedidos aparecem em tempo real quando o painel está aberto.'} O WhatsApp continua exigindo o envio da mensagem.</p>`;
   $$('[data-admin-shortcut]').forEach(button=>button.onclick=()=>{adminTab=button.dataset.adminShortcut;renderAdmin();});
   $('#enableAdminAlerts').onclick=async()=>{
-    if(typeof Notification==='undefined')return toast('Este navegador não oferece avisos de tela. Os pedidos continuam atualizando no painel.');
-    try{const permission=await Notification.requestPermission();toast(permission==='granted'?'Avisos de novas reservas ativados neste dispositivo.':'Permissão de avisos não concedida.');}
-    catch{toast('Não foi possível ativar avisos neste navegador.');}
+    const button=$('#enableAdminAlerts'),user=auth.currentUser;
+    if(!isAdminPushConfigured())return toast('Ainda falta conectar o OneSignal e publicar o serviço externo. Consulte o guia no README do projeto.');
+    if(!user||!isAdmin)return toast('Entre na conta administrativa antes de ativar avisos.');
+    button.disabled=true;button.textContent='ATIVANDO AVISOS…';
+    try{await enableAdminPush(user);toast('Este dispositivo foi inscrito para receber avisos de novas reservas.');}
+    catch(error){console.warn('Não foi possível ativar avisos em segundo plano:',error);toast(error.message||'Não foi possível ativar os avisos. Confira a configuração do OneSignal.');}
+    finally{button.disabled=false;button.textContent=isAdminPushConfigured()?'ATIVAR AVISOS EM SEGUNDO PLANO':'CONFIGURAR AVISOS EM SEGUNDO PLANO';}
   };
 }
 

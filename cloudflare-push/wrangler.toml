@@ -1,0 +1,13 @@
+name = "graca-admin-push"
+main = "src/index.js"
+compatibility_date = "2026-11-09"
+
+[vars]
+FIREBASE_PROJECT_ID = "graca-454ff"
+ONESIGNAL_APP_ID = "PREENCHA_COM_O_APP_ID_DO_ONESIGNAL"
+SITE_URL = "https://graca-454ff.web.app"
+ALLOWED_ORIGINS = "https://graca-454ff.web.app,https://graca-454ff.firebaseapp.com,http://127.0.0.1:5501,http://localhost:5501"
+
+[[kv_namespaces]]
+binding = "PUSH_STATE"
+id = "CRIE_E_COLE_O_ID_DO_NAMESPACE_KV"

@@ -4,8 +4,8 @@ const { spawnSync } = require('node:child_process');
 
 const root = path.resolve(__dirname, '..');
 const publicDir = path.join(root, 'public');
-const sourceFiles = ['app.js', 'firebase.js', 'catalog-seed.js', 'cloudinary-config.js', 'dev-server.js', 'scripts/reservation-emulator-smoke.cjs'];
-const hostingFiles = ['index.html', 'style.css', 'app.js', 'firebase.js', 'catalog-seed.js', 'cloudinary-config.js', 'assets/graca-editorial-background.jfif', 'assets/graca-logo-transparent.png'];
+const sourceFiles = ['app.js', 'admin-push.js', 'push-config.js', 'firebase.js', 'catalog-seed.js', 'cloudinary-config.js', 'dev-server.js', 'scripts/reservation-emulator-smoke.cjs', 'cloudflare-push/src/index.js'];
+const hostingFiles = ['index.html', 'style.css', 'app.js', 'admin-push.js', 'push-config.js', 'firebase.js', 'catalog-seed.js', 'cloudinary-config.js', 'OneSignalSDKWorker.js', 'assets/graca-editorial-background.jfif', 'assets/graca-logo-transparent.png'];
 const failed = [];
 const fail = message => failed.push(message);
 const ok = message => process.stdout.write(`OK ${message}.\n`);
@@ -67,11 +67,15 @@ const checks = [
   ['editor de produtos único mantém a galeria Cloudinary sem instruções antigas de Worker', (app.match(/productEditor = async function/g) || []).length === 1 && !/O segredo do Cloudinary fica somente no Worker/.test(app)],
   ['galeria aceita até cinco fotos e URLs HTTPS re-hospedadas no Cloudinary', /multiple/.test(app) && /gallery\.length\+files\.length>5/.test(app) && /body\.append\('file',url\.href\)/.test(app)],
   ['renderer e Firestore voltam com segurança após alternar ou restaurar a página', /if\(!productGrid&&!categoryFilter&&!featuredProducts\)return;/.test(app) && /if\(productGrid\)productGrid\.innerHTML/.test(app) && /window\.addEventListener\('pageshow',event=>\{if\(event\.persisted\)window\.location\.reload\(\);\}/.test(app)],
-  ['painel permite excluir mensagens e fichas de cliente com autorização de admin', /data-delete-message/.test(app) && /data-delete-customer/.test(app) && /function deleteAdminMessage/.test(app) && /function deleteCustomerRecord/.test(app)],
+  ['painel permite apagar todos os contatos com backup, reautenticação e preservação dos limitadores', /id="deleteAllContacts"/.test(app) && /function openProtectedBulkDeleteDialog/.test(app) && /messageLimits/.test(app) && /EXCLUIR TODOS OS CONTATOS/.test(app)],
+  ['redefinição de perfis remove VIP em lote, baixa cópia e preserva contas de autenticação', /id="resetCustomerProfiles"/.test(app) && /REDEFINIR PERFIS E VIPS/.test(app) && /EmailAuthProvider\.credential/.test(app) && /Firebase Authentication/.test(app) && /byUid=new Map/.test(app)],
+  ['exclusão individual de cliente remove a associação VIP na mesma operação', /batch\.delete\(doc\(db,'customers',uid\)\);batch\.delete\(doc\(db,'vipUsers',uid\)\)/.test(app)],
   ['pedido entregue tem ação clara de finalizar e registrar pagamento/canal', /data-close-order/.test(app) && /FINALIZAR PEDIDO/.test(app) && /finalizeReservationSale\(/.test(app)],
-  ['alerta de reserva aparece em tempo real no painel aberto', /snapshot\.docChanges\(\)/.test(app) && /notifyAdminOfNewReservation/.test(app) && /Notification\.requestPermission/.test(app)],
+  ['alertas em segundo plano informam quando falta configuração e autenticam a inscrição administrativa', /CONFIGURAR AVISOS EM SEGUNDO PLANO/.test(app) && /isAdminPushConfigured\(\)/.test(app) && /enableAdminPush\(user\)/.test(app) && /OneSignal\.User\.PushSubscription\.optIn/.test(fs.readFileSync(path.join(root,'admin-push.js'),'utf8')) && /notifyAdminPushForOrder/.test(app) && /snapshot\.docChanges\(\)/.test(app)],
+  ['worker de avisos valida token Firebase, autorização administrativa e pedido dono antes de notificar', /verifyFirebaseToken/.test(fs.readFileSync(path.join(root,'cloudflare-push/src/index.js'),'utf8')) && /authorizeAdmin/.test(fs.readFileSync(path.join(root,'cloudflare-push/src/index.js'),'utf8')) && /orders\/new/.test(fs.readFileSync(path.join(root,'cloudflare-push/src/index.js'),'utf8')) && /include_subscription_ids/.test(fs.readFileSync(path.join(root,'cloudflare-push/src/index.js'),'utf8')) && /ONESIGNAL_REST_API_KEY/.test(fs.readFileSync(path.join(root,'cloudflare-push/src/index.js'),'utf8'))],
   ['botão WhatsApp prepara a mensagem para o número administrativo informado', /wa\.me\/5563993051964/.test(app) && /adminReservationAlertLink/.test(app)],
   ['conta administrativa requer e-mail confirmado e autorização própria', /request\.auth\.token\.email_verified == true/.test(rules) && /exists\(\/databases\/\$\(database\)\/documents\/admins/.test(rules)],
+  ['admin por documento continua autorizado quando o token não possui a reivindicação opcional admin', /'admin' in request\.auth\.token[\s\S]*?exists\(\/databases\/\$\(database\)\/documents\/admins/.test(rules)],
   ['custos do catálogo permanecem em coleção privada', /match \/productCosts\/[\s\S]*?allow get, list: if isAdmin\(\)/.test(rules)],
 	  ['produtos de exemplo usam imagens e permanecem como rascunho até revisão', (seed.match(/id: 'seed-/g) || []).length === 8 && /active:false/.test(app)],
 	  ['categorias da vitrine vêm somente de produtos ativos e peças sem estoque aparecem esgotadas', /categoriesList = \['Todas',[\s\S]*activeProducts\(\)\.map\(p => String\(p\.category/.test(app) && /sold-out-badge/.test(app) && /stockForSize\(product,item\.size\)/.test(app)],
