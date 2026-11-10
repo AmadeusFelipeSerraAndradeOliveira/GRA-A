@@ -4,7 +4,7 @@ compatibility_date = "2026-11-09"
 
 [vars]
 FIREBASE_PROJECT_ID = "graca-454ff"
-ONESIGNAL_APP_ID = "PREENCHA_COM_O_APP_ID_DO_ONESIGNAL"
+ONESIGNAL_APP_ID = "2fbb33eb-59e8-4e5e-8e96-f99e385a3e41"
 SITE_URL = "https://graca-454ff.web.app"
 ALLOWED_ORIGINS = "https://graca-454ff.web.app,https://graca-454ff.firebaseapp.com,http://127.0.0.1:5501,http://localhost:5501"
 

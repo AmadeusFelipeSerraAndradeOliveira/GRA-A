@@ -35,12 +35,12 @@ Depois de criar o preset, abra **Produtos → Configurar upload** no painel para
 
 ## WhatsApp e avisos de novas reservas
 
-As reservas novas aparecem em tempo real quando o painel administrativo está aberto. Também foi preparada uma inscrição de push com OneSignal: depois de conectar as contas gratuitas e publicar o Worker descrito abaixo, clique em **Visão Geral → Ativar avisos em segundo plano** em cada aparelho administrativo. O serviço usa um Worker gratuito fora do Firebase para enviar o push e o OneSignal para entregá-lo ao navegador; o segredo da API fica no Cloudflare, nunca no site.
+As reservas novas aparecem em tempo real quando o painel administrativo está aberto. Também foi preparada uma inscrição de push com OneSignal: depois de publicar o Worker descrito abaixo, clique em **Visão Geral → Ativar avisos em segundo plano** em cada aparelho administrativo. O app OneSignal da GRAÇA já foi criado e o site `https://graca-454ff.web.app` foi cadastrado nele. O serviço usa um Worker gratuito fora do Firebase para enviar o push e o OneSignal para entregá-lo ao navegador; o segredo da API fica no Cloudflare, nunca no site.
 
 ### Ativar notificações fora do navegador
 
-1. Crie uma aplicação gratuita no OneSignal para o site `https://graca-454ff.web.app`, habilite **Web Push** e copie o **App ID** em **Settings → Keys & IDs**.
-2. Crie uma conta Cloudflare e abra um terminal na pasta `cloudflare-push`:
+1. O app OneSignal **GRAÇA GMC - Avisos administrativos** já está criado com Web Push para `https://graca-454ff.web.app`. O App ID público já está preenchido em `push-config.js` e `cloudflare-push/wrangler.toml`.
+2. Entre em uma conta Cloudflare e abra um terminal na pasta `cloudflare-push`:
 
    ```powershell
    npm install
@@ -48,7 +48,7 @@ As reservas novas aparecem em tempo real quando o painel administrativo está ab
    npx wrangler kv namespace create PUSH_STATE
    ```
 
-3. Copie o `id` retornado para `cloudflare-push/wrangler.toml`, substituindo `CRIE_E_COLE_O_ID_DO_NAMESPACE_KV`. Atualize o App ID nessa configuração e também em `push-config.js`.
+3. Copie o `id` retornado para `cloudflare-push/wrangler.toml`, substituindo `CRIE_E_COLE_O_ID_DO_NAMESPACE_KV`.
 4. Em **Settings → Keys & IDs** no OneSignal, crie/copie a chave REST da aplicação. Na pasta `cloudflare-push`, grave a chave como segredo e publique o Worker:
 
    ```powershell
