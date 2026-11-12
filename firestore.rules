@@ -23,12 +23,16 @@
 //   automatically; a verified user may create only their own active vipUsers
 //   record, while admins can explicitly block or remove access.
 // messages/{id}: UID/name/email/subject/message/status/timestamps; private to admins
-//   after creation, with admin-only deletion. Cloudinary preset is public config.
+//   after creation, with admin-only deletion. Uploads use a signed Cloudflare Worker.
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() {
       return request.auth != null;
+    }
+
+    function validSubmissionDeviceId(value) {
+      return value is string && value.matches('^[a-f0-9-]{36}$');
     }
 
     function isAdmin() {
@@ -285,9 +289,10 @@ service cloud.firestore {
 
     function validReservation(data) {
       return signedIn()
-        && data.keys().hasAll(['uid', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt'])
+        && data.keys().hasAll(['uid', 'submissionDeviceId', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'submissionDeviceId', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt'])
         && data.uid == request.auth.uid
+        && validSubmissionDeviceId(data.submissionDeviceId)
         && data.confirmationCode is string && data.confirmationCode.size() >= 10 && data.confirmationCode.size() <= 32
         && data.customerName is string && data.customerName.size() > 0 && data.customerName.size() <= 120
         && data.phone is string && data.phone.matches('^[0-9]{10,13}$')
@@ -343,8 +348,9 @@ service cloud.firestore {
 
     function validAdminReservation(data) {
       return data.keys().hasAll(['uid', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'subtotalCents', 'discountCents', 'couponCode', 'couponPercent', 'couponReserved', 'couponCounted', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt', 'confirmedAt', 'cancelledAt', 'salesChannel', 'paymentMethod', 'saleTotalCents', 'installmentCount', 'installmentValueCents', 'finalInstallmentValueCents', 'closedAt'])
+        && data.keys().hasOnly(['uid', 'submissionDeviceId', 'confirmationCode', 'customerName', 'phone', 'items', 'totalCents', 'subtotalCents', 'discountCents', 'couponCode', 'couponPercent', 'couponReserved', 'couponCounted', 'deliveryMethod', 'address', 'pickupDetails', 'notes', 'marketingConsent', 'status', 'statusHistory', 'stockApplied', 'stockRestored', 'createdAt', 'updatedAt', 'confirmedAt', 'cancelledAt', 'salesChannel', 'paymentMethod', 'saleTotalCents', 'installmentCount', 'installmentValueCents', 'finalInstallmentValueCents', 'closedAt'])
         && data.uid == resource.data.uid
+        && (!('submissionDeviceId' in resource.data) || data.submissionDeviceId == resource.data.submissionDeviceId)
         && data.confirmationCode == resource.data.confirmationCode
         && data.customerName == resource.data.customerName
         && data.phone == resource.data.phone
@@ -556,10 +562,19 @@ service cloud.firestore {
         && data.updatedAt is timestamp && data.updatedAt == request.time;
     }
 
+    function validCloudinaryUploadSetting(data) {
+      return data.keys().hasAll(['endpoint', 'updatedAt'])
+        && data.keys().hasOnly(['endpoint', 'updatedAt'])
+        && data.endpoint is string && data.endpoint.size() <= 512
+        && data.endpoint.matches('^https://graca-cloudinary-upload\\.[a-z0-9-]+\\.workers\\.dev/upload$')
+        && data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
     function validMessageData(data) {
       return data.keys().hasAll(['uid', 'name', 'email', 'subject', 'message', 'status', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'name', 'email', 'phone', 'subject', 'message', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'submissionDeviceId', 'name', 'email', 'phone', 'subject', 'message', 'status', 'createdAt', 'updatedAt'])
         && data.uid is string && data.uid.size() > 0 && data.uid.size() <= 128
+        && (!('submissionDeviceId' in data) || validSubmissionDeviceId(data.submissionDeviceId))
         && data.name is string && data.name.size() > 0 && data.name.size() <= 120
         && data.email is string && data.email.size() > 3 && data.email.size() <= 254
         && data.email.matches('^[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}$')
@@ -573,8 +588,10 @@ service cloud.firestore {
     function validMessage(data, messageId) {
       return signedIn() && validMessageData(data)
         && data.uid == request.auth.uid && data.status == 'Nova'
+        && 'submissionDeviceId' in data && validSubmissionDeviceId(data.submissionDeviceId)
         && data.createdAt == request.time && data.updatedAt == request.time
-        && messageCooldownWritten(messageId, data.email);
+        && messageCooldownWritten(messageId, data.email)
+        && messageSessionCooldownWritten(messageId, data.submissionDeviceId);
     }
 
     function validCommunityComment(data) {
@@ -584,7 +601,8 @@ service cloud.firestore {
         && data.name is string && data.name.size() > 0 && data.name.size() <= 120
         && data.text is string && data.text.size() >= 8 && data.text.size() <= 500
         && data.status == 'published'
-        && data.createdAt is timestamp && data.createdAt == request.time;
+        && data.createdAt is timestamp && data.createdAt == request.time
+        && commentCooldownWritten(data.uid, data.createdAt);
     }
 
     function validReservationLimit(data, phone) {
@@ -604,11 +622,34 @@ service cloud.firestore {
         && getAfter(path).data.lastSubmittedAt == request.time;
     }
 
+    function validReservationSessionLimit(data, deviceId) {
+      return data.keys().hasAll(['deviceId', 'lastOrderId', 'lastSubmittedAt'])
+        && data.keys().hasOnly(['deviceId', 'lastOrderId', 'lastSubmittedAt'])
+        && data.deviceId == deviceId && validSubmissionDeviceId(data.deviceId) && data.lastOrderId is string
+        && data.lastOrderId.size() >= 10 && data.lastOrderId.size() <= 128
+        && data.lastSubmittedAt is timestamp && data.lastSubmittedAt == request.time;
+    }
+
+    function reservationSessionCooldownWritten(orderId, deviceId) {
+      let path = /databases/$(database)/documents/reservationSessionLimits/$(deviceId);
+      return existsAfter(path)
+        && getAfter(path).data.deviceId == deviceId
+        && getAfter(path).data.lastOrderId == orderId
+        && getAfter(path).data.lastSubmittedAt == request.time;
+    }
+
     function reservationOrderWritten(phone, orderId) {
       let path = /databases/$(database)/documents/orders/$(orderId);
       return existsAfter(path)
         && getAfter(path).data.uid == request.auth.uid
         && getAfter(path).data.phone == phone;
+    }
+
+    function reservationDeviceOrderWritten(deviceId, orderId) {
+      let path = /databases/$(database)/documents/orders/$(orderId);
+      return existsAfter(path)
+        && getAfter(path).data.uid == request.auth.uid
+        && getAfter(path).data.submissionDeviceId == deviceId;
     }
 
     function validMessageLimit(data, email) {
@@ -625,6 +666,55 @@ service cloud.firestore {
         && getAfter(path).data.email == email
         && getAfter(path).data.lastMessageId == messageId
         && getAfter(path).data.lastSubmittedAt == request.time;
+    }
+
+    function validMessageSessionLimit(data, deviceId) {
+      return data.keys().hasAll(['deviceId', 'lastMessageId', 'lastSubmittedAt'])
+        && data.keys().hasOnly(['deviceId', 'lastMessageId', 'lastSubmittedAt'])
+        && data.deviceId == deviceId && validSubmissionDeviceId(data.deviceId) && data.lastMessageId is string
+        && data.lastMessageId.size() >= 10 && data.lastMessageId.size() <= 128
+        && data.lastSubmittedAt is timestamp && data.lastSubmittedAt == request.time;
+    }
+
+    function messageSessionCooldownWritten(messageId, deviceId) {
+      let path = /databases/$(database)/documents/messageSessionLimits/$(deviceId);
+      return signedIn() && existsAfter(path)
+        && getAfter(path).data.deviceId == deviceId
+        && getAfter(path).data.lastMessageId == messageId
+        && getAfter(path).data.lastSubmittedAt == request.time;
+    }
+
+    function messageSessionWritten(uid, messageId, deviceId) {
+      let path = /databases/$(database)/documents/messages/$(messageId);
+      return existsAfter(path)
+        && getAfter(path).data.uid == uid
+        && getAfter(path).data.submissionDeviceId == deviceId
+        && getAfter(path).data.status == 'Nova';
+    }
+
+    function validCommentLimit(data, uid) {
+      return data.keys().hasAll(['uid', 'lastCommentId', 'lastSubmittedAt'])
+        && data.keys().hasOnly(['uid', 'lastCommentId', 'lastSubmittedAt'])
+        && data.uid == uid && data.lastCommentId is string
+        && data.lastCommentId.size() >= 10 && data.lastCommentId.size() <= 128
+        && data.lastSubmittedAt is timestamp && data.lastSubmittedAt == request.time;
+    }
+
+    function commentCooldownWritten(uid, createdAt) {
+      let path = /databases/$(database)/documents/commentLimits/$(uid);
+      return signedIn() && existsAfter(path)
+        && getAfter(path).data.uid == uid
+        && getAfter(path).data.lastCommentId is string
+        && getAfter(path).data.lastSubmittedAt == request.time
+        && commentWritten(uid, getAfter(path).data.lastCommentId, createdAt);
+    }
+
+    function commentWritten(uid, commentId, createdAt) {
+      let path = /databases/$(database)/documents/comments/$(commentId);
+      return existsAfter(path)
+        && getAfter(path).data.uid == uid
+        && getAfter(path).data.createdAt == createdAt
+        && getAfter(path).data.status == 'published';
     }
 
     function messageWritten(email, messageId) {
@@ -734,7 +824,8 @@ service cloud.firestore {
       // normalized WhatsApp number. The same phone cannot bypass the limit by
       // starting another anonymous Firebase session.
       allow create: if validReservation(request.resource.data)
-        && reservationCooldownWritten(orderId, request.resource.data.phone);
+        && reservationCooldownWritten(orderId, request.resource.data.phone)
+        && reservationSessionCooldownWritten(orderId, request.resource.data.submissionDeviceId);
       allow update: if (isAdmin()
           && validAdminReservation(request.resource.data)
           && validTransition()
@@ -756,6 +847,19 @@ service cloud.firestore {
         && resource.data.phone == uid
         && request.time >= resource.data.lastSubmittedAt + duration.value(30, 's')
         && reservationOrderWritten(uid, request.resource.data.lastOrderId);
+    }
+
+    match /reservationSessionLimits/{uid} {
+      allow get, list: if isAdmin();
+      allow delete: if siteResetAuthorized();
+      allow create: if signedIn()
+        && validReservationSessionLimit(request.resource.data, uid)
+        && reservationDeviceOrderWritten(uid, request.resource.data.lastOrderId);
+      allow update: if signedIn()
+        && validReservationSessionLimit(request.resource.data, uid)
+        && resource.data.deviceId == uid
+        && request.time >= resource.data.lastSubmittedAt + duration.value(30, 's')
+        && reservationDeviceOrderWritten(uid, request.resource.data.lastOrderId);
     }
 
     match /coupons/{couponId} {
@@ -810,6 +914,23 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    match /commentLimits/{uid} {
+      allow get, list: if isAdmin();
+      allow delete: if siteResetAuthorized();
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.auth.token.email_verified == true
+        && request.auth.token.firebase.sign_in_provider != 'anonymous'
+        && validCommentLimit(request.resource.data, uid)
+        && commentWritten(uid, request.resource.data.lastCommentId, request.resource.data.lastSubmittedAt);
+      allow update: if signedIn() && request.auth.uid == uid
+        && request.auth.token.email_verified == true
+        && request.auth.token.firebase.sign_in_provider != 'anonymous'
+        && validCommentLimit(request.resource.data, uid)
+        && resource.data.uid == uid
+        && request.time >= resource.data.lastSubmittedAt + duration.value(30, 's')
+        && commentWritten(uid, request.resource.data.lastCommentId, request.resource.data.lastSubmittedAt);
+    }
+
     match /messageLimits/{uid} {
       allow get, list: if isAdmin();
       allow delete: if siteResetAuthorized();
@@ -823,16 +944,31 @@ service cloud.firestore {
         && messageWritten(uid, request.resource.data.lastMessageId);
     }
 
+    match /messageSessionLimits/{uid} {
+      allow get, list: if isAdmin();
+      allow delete: if siteResetAuthorized();
+      allow create: if signedIn()
+        && validMessageSessionLimit(request.resource.data, uid)
+        && messageSessionWritten(request.auth.uid, request.resource.data.lastMessageId, uid);
+      allow update: if signedIn()
+        && validMessageSessionLimit(request.resource.data, uid)
+        && resource.data.deviceId == uid
+        && request.time >= resource.data.lastSubmittedAt + duration.value(30, 's')
+        && messageSessionWritten(request.auth.uid, request.resource.data.lastMessageId, uid);
+    }
+
     match /settings/{settingId} {
       allow get: if (settingId == 'vip' && (isAdmin() || isActiveVip()))
-        || (settingId in ['finance', 'siteReset'] && isAdmin());
+        || (settingId in ['finance', 'siteReset', 'cloudinaryUpload'] && isAdmin());
       allow list: if isAdmin();
       allow create: if isAdmin() && ((settingId == 'vip' && validVipSetting(request.resource.data))
         || (settingId == 'finance' && validFinanceBaseline(request.resource.data))
+        || (settingId == 'cloudinaryUpload' && validCloudinaryUploadSetting(request.resource.data))
         || (settingId == 'siteReset' && !exists(/databases/$(database)/documents/settings/siteReset)
           && validSiteResetMarker(request.resource.data)));
       allow update: if isAdmin() && ((settingId == 'vip' && validVipSetting(request.resource.data))
         || (settingId == 'finance' && validFinanceBaseline(request.resource.data))
+        || (settingId == 'cloudinaryUpload' && validCloudinaryUploadSetting(request.resource.data))
         || (settingId == 'siteReset' && validSiteResetMarker(request.resource.data)
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['resetBy', 'createdAt'])));
       allow delete: if siteResetAuthorized();

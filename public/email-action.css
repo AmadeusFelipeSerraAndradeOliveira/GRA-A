@@ -20,4 +20,3 @@ footer{margin-top:24px;color:#776c66;text-align:center;font-size:9px;font-weight
 [hidden]{display:none!important}
 @media(max-width:480px){.action-shell{width:min(100% - 22px,640px)}.action-card{border-radius:22px}.brand img{width:76px;height:62px}}
 @media(prefers-reduced-motion:no-preference){.action-card{animation:arrive .35s ease-out both}@keyframes arrive{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}}
-

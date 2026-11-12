@@ -1,8 +1,7 @@
-// Public Cloudinary configuration for unsigned browser uploads.
-// The preset must be created as unsigned and restricted to image types and
-// the `graca/products` folder in Cloudinary Console before uploads can work.
+// Non-secret identifiers used by the signed Cloudinary upload Worker.
 export const CLOUDINARY_CONFIG = Object.freeze({
   cloudName: 'imc3dn7g',
-  uploadPreset: 'graca_products_unsigned_v1'
+  uploadWorkerName: 'graca-cloudinary-upload',
+  maxImageBytes: 5 * 1024 * 1024
 });
 

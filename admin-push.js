@@ -23,7 +23,12 @@ async function getOneSignal() {
         const initializedAppId=window.__gracaOneSignalAppId;
         if(initializedAppId&&initializedAppId!==appId)throw new Error('Este navegador já carregou outro aplicativo OneSignal. Atualize a página.');
         if(!initializedAppId){
-          await OneSignal.init({appId,autoResubscribe:true});
+          await OneSignal.init({
+            appId,
+            autoResubscribe:true,
+            serviceWorkerPath:'/OneSignalSDKWorker.js',
+            serviceWorkerParam:{scope:'/'}
+          });
           window.__gracaOneSignalAppId=appId;
         }
         resolve(OneSignal);
@@ -54,13 +59,24 @@ async function workerRequest(path,user,body) {
   const base=workerBaseUrl();
   if(!base)throw new Error('Configure o endereço HTTPS do serviço de avisos em push-config.js.');
   const token=await user.getIdToken(true);
-  const response=await fetch(`${base}${path}`,{
-    method:'POST',headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json'},
-    body:JSON.stringify(body)
-  });
+  let response;
+  try{
+    response=await fetch(`${base}${path}`,{
+      method:'POST',headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json'},
+      body:JSON.stringify(body)
+    });
+  }catch{
+    throw new Error('Não foi possível conectar ao serviço de avisos. Abra o site pelo endereço HTTPS publicado e tente novamente.');
+  }
   const result=await response.json().catch(()=>({}));
   if(!response.ok)throw new Error(result.error||'O serviço de avisos recusou a solicitação.');
   return result;
+}
+
+export async function prepareAdminPush() {
+  if(!isAdminPushConfigured())throw new Error('O serviço de avisos ainda não está configurado.');
+  await getOneSignal();
+  return true;
 }
 
 export async function enableAdminPush(user) {
@@ -69,7 +85,15 @@ export async function enableAdminPush(user) {
   if(!workerBaseUrl())throw new Error('O serviço externo ainda não foi publicado. Configure a URL HTTPS no arquivo push-config.js.');
   const OneSignal=await getOneSignal();
   if(!OneSignal.Notifications.isPushSupported())throw new Error('Este navegador ou dispositivo não oferece avisos web.');
-  await OneSignal.User.PushSubscription.optIn();
+  const permission=OneSignal.Notifications.permissionNative||window.Notification?.permission||'default';
+  if(permission==='denied')throw new Error('Os avisos estão bloqueados neste navegador. Libere as notificações nas configurações do site e tente novamente.');
+  if(permission!=='granted'){
+    const granted=await OneSignal.Notifications.requestPermission();
+    if(!granted&&OneSignal.Notifications.permissionNative!=='granted'&&window.Notification?.permission!=='granted'){
+      throw new Error('Permita os avisos na janela do navegador para concluir a ativação.');
+    }
+  }
+  if(OneSignal.User.PushSubscription.optedIn!==true)await OneSignal.User.PushSubscription.optIn();
   const subscriptionId=await waitForSubscriptionId(OneSignal);
   if(!subscriptionId)throw new Error('O navegador não confirmou a inscrição. Permita os avisos e tente novamente.');
   await workerRequest('/admin/subscribe',user,{subscriptionId});

@@ -1,3 +1,5 @@
+const { randomUUID } = require('node:crypto');
+
 const projectId = 'demo-graca-gmc';
 const firestore = `http://127.0.0.1:8080/v1/projects/${projectId}/databases/(default)/documents`;
 const authUrl = `http://127.0.0.1:9099/identitytoolkit.googleapis.com/v1/accounts:signUp?key=fake-api-key`;
@@ -15,6 +17,14 @@ async function commit(token, writes) {
     method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ writes })
   });
+}
+async function createAnonymousSession() {
+  const session = await request(authUrl, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ returnSecureToken: true })
+  });
+  session.submissionDeviceId = randomUUID();
+  return session;
 }
 
 const string = stringValue => ({ stringValue });
@@ -55,14 +65,12 @@ async function main() {
     } }] })
   });
 
-  const anonymous = await request(authUrl, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ returnSecureToken: true })
-  });
-  async function submitReservation(session, { orderId, phone, productId: requestedProductId=productId, productName='Produto Smoke Test', size='Único', quantity=1, unitPriceCents=12000 }) {
+  const anonymous = await createAnonymousSession();
+  const secondAnonymous = await createAnonymousSession();
+  async function submitReservation(session, { orderId, phone, productId: requestedProductId=productId, productName='Produto Smoke Test', size='Único', quantity=1, unitPriceCents=12000, submissionDeviceId=session.submissionDeviceId }) {
     const subtotalCents = unitPriceCents * quantity;
     const orderFields = {
-      uid: string(session.localId), confirmationCode: string(`GSMOKE${orderId}`), customerName: string('Teste Retirada'), phone: string(phone),
+      uid: string(session.localId), submissionDeviceId: string(submissionDeviceId), confirmationCode: string(`GSMOKE${orderId}`), customerName: string('Teste Retirada'), phone: string(phone),
       items: list([map({ productId: string(requestedProductId), name: string(productName), size: string(size), quantity: integer(quantity), unitPriceCents: integer(unitPriceCents) })]),
       totalCents: integer(subtotalCents), deliveryMethod: string('Retirada'), address: map({}), pickupDetails: string(''), notes: string(''),
       marketingConsent: boolean(false), status: string('Aguardando confirmação'), statusHistory: list([string('Aguardando confirmação')]),
@@ -72,16 +80,67 @@ async function main() {
       { update: { name: `projects/${projectId}/databases/(default)/documents/orders/${orderId}`, fields: orderFields },
         updateTransforms: [{ fieldPath: 'createdAt', setToServerValue: 'REQUEST_TIME' }, { fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }] },
       { update: { name: `projects/${projectId}/databases/(default)/documents/reservationLimits/${phone}`, fields: { phone: string(phone), lastOrderId: string(orderId) } },
+        updateTransforms: [{ fieldPath: 'lastSubmittedAt', setToServerValue: 'REQUEST_TIME' }] },
+      { update: { name: `projects/${projectId}/databases/(default)/documents/reservationSessionLimits/${submissionDeviceId}`, fields: { deviceId: string(submissionDeviceId), lastOrderId: string(orderId) } },
         updateTransforms: [{ fieldPath: 'lastSubmittedAt', setToServerValue: 'REQUEST_TIME' }] }
     ];
     return commit(session.idToken, writes);
   }
+  async function submitContact(session, { messageId, email, submissionDeviceId=session.submissionDeviceId }) {
+    const fields = {
+      uid: string(session.localId), submissionDeviceId: string(submissionDeviceId), name: string('Contato Smoke'), email: string(email),
+      subject: string('Teste'), message: string('Mensagem local válida para testar o limite de contato.'), status: string('Nova')
+    };
+    return commit(session.idToken, [
+      { update: { name: `projects/${projectId}/databases/(default)/documents/messages/${messageId}`, fields },
+        updateTransforms: [{ fieldPath: 'createdAt', setToServerValue: 'REQUEST_TIME' }, { fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }] },
+      { update: { name: `projects/${projectId}/databases/(default)/documents/messageLimits/${email}`, fields: { email: string(email), lastMessageId: string(messageId) } },
+        updateTransforms: [{ fieldPath: 'lastSubmittedAt', setToServerValue: 'REQUEST_TIME' }] },
+      { update: { name: `projects/${projectId}/databases/(default)/documents/messageSessionLimits/${submissionDeviceId}`, fields: { deviceId: string(submissionDeviceId), lastMessageId: string(messageId) } },
+        updateTransforms: [{ fieldPath: 'lastSubmittedAt', setToServerValue: 'REQUEST_TIME' }] }
+    ]);
+  }
   await submitReservation(anonymous, { orderId: 'pickup-smoke-order-01', phone: '63999887766' });
   process.stdout.write('PASS: cliente anônimo gravou uma solicitação com retirada local e endereço vazio.\n');
-  await submitReservation(anonymous, { orderId: 'size-stock-order-01', phone: '63999887765', productId: sizedProductId, productName: 'Produto por tamanho', size: 'P', quantity: 2, unitPriceCents: 12000 });
+  let crossSessionPhoneRejected = false;
+  try { await submitReservation(secondAnonymous, { orderId: 'pickup-smoke-order-02', phone: '63999887766' }); }
+  catch (error) { crossSessionPhoneRejected = /403/.test(error.message); }
+  if (!crossSessionPhoneRejected) throw new Error('o emulador permitiu renovar o limite do mesmo WhatsApp com outra sessão anônima.');
+  process.stdout.write('PASS: outra sessão anônima não renovou o limite do mesmo WhatsApp.\n');
+  await submitReservation(secondAnonymous, { orderId: 'pickup-smoke-order-02', phone: '63999887767' });
+  process.stdout.write('PASS: nova sessão e novo dispositivo conseguiram fazer a primeira solicitação.\n');
+  const rotatedSession = await createAnonymousSession();
+  rotatedSession.submissionDeviceId = secondAnonymous.submissionDeviceId;
+  let newSessionDeviceRejected = false;
+  try { await submitReservation(rotatedSession, { orderId: 'pickup-smoke-order-rotated-session', phone: '63999887769' }); }
+  catch (error) { newSessionDeviceRejected = /403/.test(error.message); }
+  if (!newSessionDeviceRejected) throw new Error('o emulador permitiu renovar o limite do dispositivo ao criar outra sessão anônima e trocar o WhatsApp.');
+  process.stdout.write('PASS: trocar a sessão e o WhatsApp no mesmo navegador não renovou o limite do dispositivo.\n');
+  let sameSessionPhoneRotationRejected = false;
+  try { await submitReservation(secondAnonymous, { orderId: 'pickup-smoke-order-03', phone: '63999887768' }); }
+  catch (error) { sameSessionPhoneRotationRejected = /403/.test(error.message); }
+  if (!sameSessionPhoneRotationRejected) throw new Error('o emulador permitiu que uma mesma sessão anônima trocasse o WhatsApp e renovasse seu limite.');
+  process.stdout.write('PASS: trocar o WhatsApp na mesma sessão anônima não renova o limite.\n');
+  const contactSession = await createAnonymousSession();
+  await submitContact(contactSession,{messageId:'contact-smoke-01',email:'smoke01@example.test'});
+  const contactRotatedSession=await createAnonymousSession();
+  contactRotatedSession.submissionDeviceId=contactSession.submissionDeviceId;
+  let crossSessionContactRejected=false;
+  try{await submitContact(contactRotatedSession,{messageId:'contact-smoke-rotated-session',email:'smoke03@example.test'});}
+  catch(error){crossSessionContactRejected=/403/.test(error.message);}
+  if(!crossSessionContactRejected)throw new Error('o emulador permitiu renovar o limite de contato ao criar outra sessão e trocar o e-mail.');
+  process.stdout.write('PASS: trocar sessão e e-mail no mesmo navegador não renovou o limite de contato.\n');
+  let contactEmailRotationRejected=false;
+  try{await submitContact(contactSession,{messageId:'contact-smoke-02',email:'smoke02@example.test'});}
+  catch(error){contactEmailRotationRejected=/403/.test(error.message);}
+  if(!contactEmailRotationRejected)throw new Error('o emulador permitiu trocar o e-mail e renovar o limite de contato na mesma sessão.');
+  process.stdout.write('PASS: trocar o e-mail na mesma sessão não renova o limite de contato.\n');
+  const sizeSession = await createAnonymousSession();
+  await submitReservation(sizeSession, { orderId: 'size-stock-order-01', phone: '63999887765', productId: sizedProductId, productName: 'Produto por tamanho', size: 'P', quantity: 2, unitPriceCents: 12000 });
   process.stdout.write('PASS: estoque disponível por tamanho aceitou a quantidade válida.\n');
   let soldOutSizeRejected = false;
-  try { await submitReservation(anonymous, { orderId: 'size-stock-order-02', phone: '63999887764', productId: sizedProductId, productName: 'Produto por tamanho', size: 'M', quantity: 1, unitPriceCents: 12000 }); }
+  const soldOutSession = await createAnonymousSession();
+  try { await submitReservation(soldOutSession, { orderId: 'size-stock-order-02', phone: '63999887764', productId: sizedProductId, productName: 'Produto por tamanho', size: 'M', quantity: 1, unitPriceCents: 12000 }); }
   catch (error) { soldOutSizeRejected = /403/.test(error.message); }
   if (!soldOutSizeRejected) throw new Error('o emulador não recusou a reserva de um tamanho sem estoque.');
   process.stdout.write('PASS: tamanho sem unidades disponíveis foi recusado pelas regras.\n');
@@ -106,6 +165,7 @@ async function main() {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password, returnSecureToken: true })
   });
+  member.submissionDeviceId = randomUUID();
   await commit('owner', [{ update: {
     name: `projects/${projectId}/databases/(default)/documents/admins/${member.localId}`,
     fields: { email: string(email), createdAt: { timestampValue: '2026-01-01T00:00:00Z' } }
@@ -125,10 +185,23 @@ async function main() {
   const couponCheck = await request(`${firestore}/coupons/SMOKE10`, { headers: { Authorization: 'Bearer owner' } });
   const tokenClaims = JSON.parse(Buffer.from(member.idToken.split('.')[1], 'base64url').toString());
   if(!couponCheck.name||tokenClaims.email_verified!==true||tokenClaims.firebase?.sign_in_provider==='anonymous')throw new Error('a preparação do membro VIP verificado no emulador falhou.');
+
+  const commentId='comment-smoke-01';
+  await commit(member.idToken,[
+    {update:{name:`projects/${projectId}/databases/(default)/documents/comments/${commentId}`,fields:{uid:string(member.localId),name:string('Cliente Teste'),text:string('Comentário local válido para testar o limite.'),status:string('published')}},updateTransforms:[{fieldPath:'createdAt',setToServerValue:'REQUEST_TIME'}]},
+    {update:{name:`projects/${projectId}/databases/(default)/documents/commentLimits/${member.localId}`,fields:{uid:string(member.localId),lastCommentId:string(commentId)}},updateTransforms:[{fieldPath:'lastSubmittedAt',setToServerValue:'REQUEST_TIME'}]}
+  ]);
+  let commentCooldownRejected=false;
+  try{await commit(member.idToken,[
+    {update:{name:`projects/${projectId}/databases/(default)/documents/comments/comment-smoke-02`,fields:{uid:string(member.localId),name:string('Cliente Teste'),text:string('Outro comentário antes de aguardar o intervalo.'),status:string('published')}},updateTransforms:[{fieldPath:'createdAt',setToServerValue:'REQUEST_TIME'}]},
+    {update:{name:`projects/${projectId}/databases/(default)/documents/commentLimits/${member.localId}`,fields:{uid:string(member.localId),lastCommentId:string('comment-smoke-02')}},updateTransforms:[{fieldPath:'lastSubmittedAt',setToServerValue:'REQUEST_TIME'}]}
+  ]);}catch(error){commentCooldownRejected=/403/.test(error.message);}
+  if(!commentCooldownRejected)throw new Error('o emulador permitiu comentários consecutivos da mesma conta verificada.');
+  process.stdout.write('PASS: comentário seguinte da mesma conta verificada aguardou o limite.\n');
   await submitReservation(member, { orderId: 'vip-smoke-order-01', phone: '63999111223' });
   process.stdout.write('PASS: conta verificada também gravou uma reserva sem cupom.\n');
   const couponOrderId = 'coupon-smoke-order-01';
-  await submitReservation(member, { orderId: couponOrderId, phone: '63999111221' });
+  await submitReservation(member, { orderId: couponOrderId, phone: '63999111221', submissionDeviceId: randomUUID() });
   let reservedUses = 0;
   async function reserveCoupon(orderId) {
     const nextReservedUses = reservedUses + 1;
@@ -147,7 +220,7 @@ async function main() {
   await reserveCoupon(couponOrderId);
   process.stdout.write('PASS: cupom e pedido foram atualizados juntos, com desconto e contador reservado.\n');
   let rejected = false;
-  await submitReservation(member, { orderId: 'coupon-smoke-order-02', phone: '63999111220' });
+  await submitReservation(member, { orderId: 'coupon-smoke-order-02', phone: '63999111220', submissionDeviceId: randomUUID() });
   try { await reserveCoupon('coupon-smoke-order-02'); }
   catch (error) { rejected = /403/.test(error.message); }
   if (!rejected) throw new Error('o emulador não recusou a segunda reserva além do limite do cupom.');
@@ -171,7 +244,7 @@ async function main() {
   process.stdout.write('PASS: pedido continua protegido fora da redefinição.\n');
   const resetMarkerPath = `projects/${projectId}/databases/(default)/documents/settings/siteReset`;
   await commit(member.idToken, [{ update: { name: resetMarkerPath, fields: { resetBy: string(member.localId) } }, updateTransforms: [{ fieldPath: 'createdAt', setToServerValue: 'REQUEST_TIME' }] }]);
-  const resetOrderPaths=['pickup-smoke-order-01','size-stock-order-01','vip-smoke-order-01','coupon-smoke-order-01'].map(id=>`projects/${projectId}/databases/(default)/documents/orders/${id}`);
+  const resetOrderPaths=['pickup-smoke-order-01','pickup-smoke-order-02','size-stock-order-01','vip-smoke-order-01','coupon-smoke-order-01'].map(id=>`projects/${projectId}/databases/(default)/documents/orders/${id}`);
   await commit(member.idToken, resetOrderPaths.map(name=>({ delete: name })));
   await commit(member.idToken, [{ delete: `projects/${projectId}/databases/(default)/documents/vipUsers/${member.localId}` }]);
   const customerCheck = await request(`${firestore}/customers/${member.localId}`, { headers: { Authorization: 'Bearer owner' } });

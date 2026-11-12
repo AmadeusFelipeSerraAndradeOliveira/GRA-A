@@ -21,11 +21,12 @@ import {
 import app from "./firebase.js";
 import { exampleProductTemplates } from "./catalog-seed.js";
 import { CLOUDINARY_CONFIG } from "./cloudinary-config.js";
-import { enableAdminPush, isAdminPushConfigured, notifyAdminPushForOrder } from "./admin-push.js";
+import { enableAdminPush, isAdminPushConfigured, notifyAdminPushForOrder, prepareAdminPush } from "./admin-push.js";
 
 /* GRAÇA GMC · vitrine, reservas e gestão operacional no Firebase. */
 const auth = getAuth(app);
 auth.languageCode = 'pt-BR';
+const db = getFirestore(app);
 const authReturnOrigin = 'https://graca-454ff.web.app';
 function emailActionSettings(path='/?emailVerified=1') {
   return {url:new URL(path,authReturnOrigin).toString()};
@@ -34,7 +35,6 @@ async function sendBrandedVerificationEmail(user) {
   auth.languageCode='pt-BR';
   return sendEmailVerification(user,emailActionSettings());
 }
-const db = getFirestore(app);
 const $ = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => [...r.querySelectorAll(s)];
 const money = n => n.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
@@ -50,7 +50,7 @@ const seedProducts = [
 const get = (k, fallback) => {try{return JSON.parse(localStorage.getItem('graca_'+k)) ?? fallback}catch{return fallback}};
 const set = (k,v) => localStorage.setItem('graca_'+k,JSON.stringify(v));
 let products=get('products',seedProducts), cart=get('cart',[]), orders=get('orders',[]), customers=get('customers',[]), messages=get('messages',[]), discounts=get('discounts',[]);
-let currentUser=null, selectedSize='M', adminTab='overview', isAdmin=false;
+let currentUser=null, selectedSize='M', adminTab='overview', isAdmin=false, cloudinaryWorkerEndpoint='';
 const toast = msg => {const el=$('#toast');el.textContent=msg;el.classList.add('show');clearTimeout(toast.t);toast.t=setTimeout(()=>el.classList.remove('show'),2600)};
 function categories(){return ['Todas',...new Set(products.map(p=>p.category))]}
 function openModal(html){$('#modalContent').innerHTML=html;$('#modalBackdrop').classList.add('open');document.body.style.overflow='hidden'}
@@ -179,7 +179,7 @@ function accountModal(mode='login',notice=''){
   $('#toSignup').onclick=()=>accountModal('signup');
  }
 }
-function registrationWelcome(resent=false){const sent=resent?'Sua conta ainda não foi confirmada. Enviamos um novo link seguro.':'Enviamos um link seguro para confirmar que este endereço de e-mail pertence a você.';openModal(`<div class="section-kicker">CONFIRME SEU E-MAIL</div><h2 id="modalTitle">QUASE LÁ.</h2><p>${sent}</p><p>A confirmação libera a Comunidade VIP. Abra o e-mail enviado para você e use o botão de confirmação. A GRAÇA nunca pedirá sua senha ou um código de acesso por e-mail.</p><p class="fine-print">Depois de confirmar, volte ao site e entre novamente para ver o acesso liberado no painel da sua conta. Se não encontrar a mensagem, confira também a pasta Spam.</p><button class="pill-button dark" id="backToLogin">VOLTAR AO LOGIN</button>`);$('#backToLogin').onclick=()=>accountModal('login')}
+function registrationWelcome(resent=false){openModal('<div class="section-kicker">CONFIRME SEU E-MAIL</div><h2 id="modalTitle">QUASE LÁ.</h2><p>'+(resent?'Sua conta ainda não foi confirmada. Enviamos um novo link de verificação.':'Enviamos um link seguro para confirmar que este endereço de e-mail pertence a você.')+'</p><p>A confirmação libera a Comunidade VIP. Abra o e-mail enviado para você e use o botão de confirmação. A GRAÇA nunca pedirá sua senha ou um código de acesso por e-mail.</p><p class="fine-print">Depois de confirmar, volte ao site e entre novamente para ver o acesso liberado no painel da sua conta. Se não encontrar a mensagem, confira também a pasta Spam.</p><button class="pill-button dark" id="backToLogin">VOLTAR AO LOGIN</button>');$('#backToLogin').onclick=()=>accountModal('login')}
 function memberNav(){const b=$('#accountBtn'),menu=$('#clientMenuBtn');if(!b||!menu)return;b.textContent=currentUser&&currentUser.emailVerified?'OI, '+currentUser.name.split(' ')[0].toUpperCase():'ENTRAR';menu.hidden=!(currentUser&&currentUser.emailVerified)}
 function clientMenu(){
  if(!currentUser)return accountModal('login');
@@ -253,6 +253,27 @@ const isCloudinaryUrl = value => {
       && url.pathname.startsWith(`/${CLOUDINARY_CONFIG.cloudName}/image/upload/`);
   } catch { return false; }
 };
+function normalizeCloudinaryWorkerEndpoint(value) {
+  let url;
+  try { url = new URL(String(value || '').trim()); }
+  catch { throw new Error('Cole a URL HTTPS do Worker de upload da GRAÇA.'); }
+  const host = url.hostname.toLowerCase();
+  const prefix = `${CLOUDINARY_CONFIG.uploadWorkerName.toLowerCase()}.`;
+  const accountHost = host.startsWith(prefix) ? host.slice(prefix.length, -'.workers.dev'.length) : '';
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash
+      || !host.endsWith('.workers.dev') || !/^[a-z0-9-]+$/.test(accountHost)
+      || !['', '/upload'].includes(url.pathname)) {
+    throw new Error(`Use a URL HTTPS do Worker ${CLOUDINARY_CONFIG.uploadWorkerName} em workers.dev, sem parâmetros extras.`);
+  }
+  return `${url.origin}/upload`;
+}
+async function getCloudinaryWorkerEndpoint() {
+  if (cloudinaryWorkerEndpoint) return cloudinaryWorkerEndpoint;
+  const saved = await getDoc(doc(db, 'settings', 'cloudinaryUpload'));
+  if (!saved.exists()) throw new Error('Configure primeiro a URL do Worker Cloudinary no painel de Produtos.');
+  cloudinaryWorkerEndpoint = normalizeCloudinaryWorkerEndpoint(saved.data().endpoint);
+  return cloudinaryWorkerEndpoint;
+}
 const isCloudinaryPublicId = value => typeof value === 'string'
   && value.length <= 255 && /^[A-Za-z0-9_-][A-Za-z0-9_/-]*$/.test(value) && !value.includes('//');
 const galleryForProduct = product => {
@@ -301,6 +322,17 @@ const friendlyReservationError = error => error?.code==='permission-denied'
   : friendlyFirestoreError(error);
 
 const submissionCooldownMs = 30_000;
+const submissionDeviceStorageKey='graca_submission_device_id';
+function getSubmissionDeviceId() {
+  try {
+    const existing=localStorage.getItem(submissionDeviceStorageKey);
+    if(/^[a-f0-9-]{36}$/.test(existing||''))return existing;
+  } catch(error) { console.warn('O identificador local de proteção não pôde ser lido.',error); }
+  const created=crypto.randomUUID();
+  try { localStorage.setItem(submissionDeviceStorageKey,created); }
+  catch(error) { console.warn('O identificador local de proteção não pôde ser persistido.',error); }
+  return created;
+}
 function checkBrowserCooldown(kind) {
   const key=`graca_${kind}_last_submit`,last=Number(localStorage.getItem(key)||0),remaining=submissionCooldownMs-(Date.now()-last);
   if(remaining>0)throw new Error(`Aguarde ${Math.ceil(remaining/1000)} segundos antes de enviar outra solicitação.`);
@@ -338,8 +370,9 @@ async function createReservationRequest({orderId,uid:ownerUid,customerName,phone
   const phoneDigits=normalizeBrazilPhone(phone);
   if(!/^\d{10,13}$/.test(phoneDigits))throw new Error('Informe um WhatsApp com DDD, usando de 10 a 13 números.');
   const confirmationCode=newConfirmationCode(),now=serverTimestamp();
-  const order={uid:user.uid,confirmationCode,customerName,phone:phoneDigits,items,totalCents,deliveryMethod,address,pickupDetails,notes,marketingConsent,status:'Aguardando confirmação',statusHistory:['Aguardando confirmação'],stockApplied:false,stockRestored:false,createdAt:now,updatedAt:now};
-  const orderRef=doc(db,'orders',orderId),limitRef=doc(db,'reservationLimits',phoneDigits);
+  const submissionDeviceId=getSubmissionDeviceId();
+  const order={uid:user.uid,submissionDeviceId,confirmationCode,customerName,phone:phoneDigits,items,totalCents,deliveryMethod,address,pickupDetails,notes,marketingConsent,status:'Aguardando confirmação',statusHistory:['Aguardando confirmação'],stockApplied:false,stockRestored:false,createdAt:now,updatedAt:now};
+  const orderRef=doc(db,'orders',orderId),limitRef=doc(db,'reservationLimits',phoneDigits),sessionLimitRef=doc(db,'reservationSessionLimits',submissionDeviceId);
   let savedOrder=await runTransaction(db,async transaction=>{
     const existing=await transaction.get(orderRef);
     if(existing.exists()){
@@ -350,6 +383,7 @@ async function createReservationRequest({orderId,uid:ownerUid,customerName,phone
     }
     transaction.set(orderRef,order);
     transaction.set(limitRef,{phone:phoneDigits,lastOrderId:orderId,lastSubmittedAt:now});
+    transaction.set(sessionLimitRef,{deviceId:submissionDeviceId,lastOrderId:orderId,lastSubmittedAt:now});
     return {orderId,confirmationCode,status:order.status,totalCents,couponReserved:false};
   });
   if(couponCode&&!savedOrder.couponReserved){
@@ -393,11 +427,13 @@ async function createContactMessage({name,email,phone,subject,message,companyWeb
   if(companyWebsite)return {ignored:true};
   checkBrowserCooldown('contact');
   const user=await ensureSubmissionUser(),normalizedEmail=String(email||'').trim().toLowerCase();
+  const submissionDeviceId=getSubmissionDeviceId();
   const messageRef=doc(collection(db,'messages')),now=serverTimestamp(),batch=writeBatch(db);
-  const data={uid:user.uid,name,email:normalizedEmail,subject,message,status:'Nova',createdAt:now,updatedAt:now};
+  const data={uid:user.uid,submissionDeviceId,name,email:normalizedEmail,subject,message,status:'Nova',createdAt:now,updatedAt:now};
   if(phone)data.phone=phone;
   batch.set(messageRef,data);
   batch.set(doc(db,'messageLimits',normalizedEmail),{email:normalizedEmail,lastMessageId:messageRef.id,lastSubmittedAt:now});
+  batch.set(doc(db,'messageSessionLimits',submissionDeviceId),{deviceId:submissionDeviceId,lastMessageId:messageRef.id,lastSubmittedAt:now});
   await batch.commit();
   markBrowserCooldown('contact');
   return {messageId:messageRef.id};
@@ -948,25 +984,23 @@ async function deleteProduct(id) {
 
 async function uploadProductPhoto(source) {
   if(!isAdmin||!auth.currentUser?.emailVerified)throw new Error('Entre em uma conta de administrador com e-mail confirmado.');
-  if(!CLOUDINARY_CONFIG.uploadPreset)throw new Error('Configure o preset unsigned graca_products_unsigned_v1 no Cloudinary.');
+  const endpoint=await getCloudinaryWorkerEndpoint();
   const body=new FormData();
   if(source instanceof File){
-    if(!['image/jpeg','image/png','image/webp'].includes(source.type)||source.size<1||source.size>5*1024*1024)throw new Error('Use uma foto JPEG, PNG ou WebP de até 5 MB.');
+    if(!['image/jpeg','image/png','image/webp'].includes(source.type)||source.size<1||source.size>CLOUDINARY_CONFIG.maxImageBytes)throw new Error('Use uma foto JPEG, PNG ou WebP de até 5 MB.');
     body.append('file',source,source.name);
   }else if(typeof source==='string'){
     let url;try{url=new URL(source.trim());}catch{throw new Error('Cole um endereço direto de imagem HTTPS válido.');}
-    if(url.protocol!=='https:'||url.username||url.password||(url.port&&url.port!=='443')||!url.hostname.includes('.')||/(localhost|\.local|\.internal)$/i.test(url.hostname)||/^\d{1,3}(?:\.\d{1,3}){3}$/.test(url.hostname))throw new Error('Use um link HTTPS público, sem senha, porta especial ou endereço local.');
-    body.append('file',url.href);
+    if(url.protocol!=='https:'||url.username||url.password||(url.port&&url.port!=='443')||!url.hostname.includes('.')||/(localhost|\.local|\.internal|\.test)$/i.test(url.hostname)||/^\d{1,3}(?:\.\d{1,3}){3}$/.test(url.hostname))throw new Error('Use um link HTTPS público, sem senha, porta especial ou endereço local.');
+    body.append('sourceUrl',url.href);
   }else throw new Error('Escolha um arquivo ou informe um endereço HTTPS de imagem.');
-  body.append('upload_preset',CLOUDINARY_CONFIG.uploadPreset);
-  const response=await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(CLOUDINARY_CONFIG.cloudName)}/image/upload`,{method:'POST',body});
+  const token=await getIdToken(auth.currentUser,true);
+  const response=await fetch(endpoint,{method:'POST',headers:{Authorization:`Bearer ${token}`},body});
   let result={};try{result=await response.json();}catch{}
   if(!response.ok){
-    const cloudinaryError=String(result.error?.message||'');
-    if(/whitelisted for unsigned uploads/i.test(cloudinaryError))throw new Error(`O preset “${CLOUDINARY_CONFIG.uploadPreset}” ainda está Assinado. Altere o modo para Não assinado no Cloudinary e salve.`);
-    throw new Error(cloudinaryError||'O Cloudinary recusou o envio. Confira o nome e o modo Não assinado do preset.');
+    throw new Error(String(result.error||'')||'O Worker Cloudinary recusou o envio. Confira se foi publicado e se seus segredos estão configurados.');
   }
-  if(!isCloudinaryUrl(result.secure_url)||!isCloudinaryPublicId(result.public_id))throw new Error('O Cloudinary enviou a foto, mas retornou uma URL ou um ID inválido para esta conta. Confira a configuração do preset.');
+  if(!isCloudinaryUrl(result.secure_url)||!isCloudinaryPublicId(result.public_id))throw new Error('O Cloudinary enviou a foto, mas retornou uma URL ou um ID inválido para esta conta. Confira a configuração do Worker.');
   return {imageUrl:result.secure_url,imagePublicId:result.public_id};
 }
 
@@ -1241,11 +1275,23 @@ async function saveCategory(name) {
 }
 
 async function configureCloudinaryUpload() {
-  openModal(`<div class="section-kicker">IMAGENS / CLOUDINARY</div><h2 id="modalTitle">CONFIGURAR O ENVIO DE FOTOS.</h2><ol><li>Abra Cloudinary Console → Settings → Upload presets.</li><li>Use o preset <strong>${htm(CLOUDINARY_CONFIG.uploadPreset)}</strong> com modo <strong>Unsigned / Não assinado</strong>.</li><li>Limite os formatos a JPG, PNG e WebP, defina a pasta de ativos <strong>graca/products</strong> e gere o ID público automaticamente.</li><li>Salve o preset. Depois, reabra o painel e envie uma foto ou URL HTTPS.</li></ol><p class="fine-print">A pasta de ativos organiza a biblioteca; ela não precisa aparecer no ID público. O preset unsigned é público. Restrinja formatos, não permita sobrescrita nem IDs enviados pelo cliente e acompanhe o uso. Nenhum segredo da conta é colocado no site.</p>`);
+  if(!isAdmin||!auth.currentUser?.emailVerified)return toast('Entre como administrador com o e-mail confirmado.');
+  const existing=await getDoc(doc(db,'settings','cloudinaryUpload')).catch(()=>null);
+  const old=existing?.exists()?String(existing.data().endpoint||''):'';
+  openModal(`<div class="section-kicker">IMAGENS / CLOUDINARY</div><h2 id="modalTitle">UPLOAD PROTEGIDO DE FOTOS.</h2><ol><li>Publique o Worker <strong>${htm(CLOUDINARY_CONFIG.uploadWorkerName)}</strong> pela pasta <strong>cloudinary-worker</strong>.</li><li>Configure nele os segredos Cloudinary <strong>CLOUDINARY_CLOUD_NAME</strong>, <strong>CLOUDINARY_API_KEY</strong> e <strong>CLOUDINARY_API_SECRET</strong>.</li><li>Copie a URL HTTPS workers.dev exibida após publicar.</li><li>Desative o preset antigo unsigned e salve a URL abaixo. O site só envia fotos após o Worker validar a sessão administrativa.</li></ol><form id="cloudinaryWorkerForm" class="modal-form"><label>URL HTTPS DO WORKER<input name="endpoint" type="url" required maxlength="512" placeholder="https://${htm(CLOUDINARY_CONFIG.uploadWorkerName)}.sua-conta.workers.dev/upload" value="${htm(old)}"></label><button class="pill-button dark">SALVAR CONFIGURAÇÃO ↗</button></form><p class="fine-print">O navegador envia o token Firebase somente ao Worker configurado. O Worker valida o administrador e assina a chamada ao Cloudinary. Segredos não ficam no site nem no Firestore.</p>`);
+  $('#cloudinaryWorkerForm').onsubmit=async event=>{
+    event.preventDefault();
+    let endpoint;
+    try{endpoint=normalizeCloudinaryWorkerEndpoint(new FormData(event.currentTarget).get('endpoint'));}
+    catch(error){return toast(error.message);}
+    const button=event.currentTarget.querySelector('button');if(button){button.disabled=true;button.textContent='SALVANDO…';}
+    try{await setDoc(doc(db,'settings','cloudinaryUpload'),{endpoint,updatedAt:serverTimestamp()});cloudinaryWorkerEndpoint=endpoint;closeModal();toast('Worker Cloudinary salvo. Os envios agora exigem sessão administrativa verificada.');}
+    catch(error){console.error(error);toast(friendlyFirestoreError(error));if(button){button.disabled=false;button.textContent='SALVAR CONFIGURAÇÃO ↗';}}
+  };
 }
 
-// Product editor with a five-image gallery. Browser uploads use the public
-// unsigned preset, so Cloudinary restrictions—not a client-side secret—guard uploads.
+// Product editor with a five-image gallery. Uploads require the signed,
+// administrator-authenticated Cloudflare Worker.
 productEditor = async function(id='') {
   const existing=products.find(item=>String(item.id)===String(id));
   const p=existing||{name:'',category:'',price:'',discount:0,stock:0,sizes:['Único'],color:'pink',mark:'GRAÇA',description:'',featured:false,active:true,imageUrl:'',imagePublicId:''};
@@ -1453,14 +1499,30 @@ function renderAdminOverview(el) {
   const pushConfigured=isAdminPushConfigured();
   el.innerHTML=`<div class="section-kicker">GRAÇA / PAINEL</div><h2>VISÃO GERAL</h2><p>Atalhos e indicadores da operação diária.</p><div class="admin-cards"><div class="metric"><span>PRODUTOS PUBLICADOS</span><strong>${activeProducts().length}</strong></div><div class="metric"><span>AGUARDANDO CONFIRMAÇÃO</span><strong>${pending}</strong></div><div class="metric"><span>EM ATENDIMENTO</span><strong>${inProgress}</strong></div><div class="metric"><span>CONTAS VIP</span><strong>${customers.length}</strong></div></div><div class="admin-toolbar"><div class="admin-shortcuts"><button class="mini-button primary" data-admin-shortcut="orders">ABRIR PEDIDOS</button><button class="mini-button" data-admin-shortcut="products">GERENCIAR PRODUTOS</button><button class="mini-button" data-admin-shortcut="analytics">ABRIR FINANCEIRO</button></div><button class="mini-button" id="enableAdminAlerts">${pushConfigured?'ATIVAR AVISOS EM SEGUNDO PLANO':'CONFIGURAR AVISOS EM SEGUNDO PLANO'}</button></div><h3>ÚLTIMAS SOLICITAÇÕES</h3>${recent.length?table(['CÓDIGO','CLIENTE','DATA','VALOR ESTIMADO','STATUS'],recent.map(order=>[htm(order.confirmationCode||order.id),htm(order.customerName),safeDate(order.createdAt).toLocaleDateString('pt-BR'),money(displayTotal(order)),htm(order.status)])):'<div class="empty-state">AS NOVAS SOLICITAÇÕES APARECERÃO AQUI EM TEMPO REAL.</div>'}<p class="fine-print">${pushConfigured?'Com o serviço conectado e este dispositivo inscrito, os avisos podem chegar mesmo com o painel fechado.':'PENDENTE: avisos com o painel fechado ainda exigem conectar o OneSignal e publicar o serviço externo. Até essa configuração, os pedidos aparecem em tempo real quando o painel está aberto.'} O WhatsApp continua exigindo o envio da mensagem.</p>`;
   $$('[data-admin-shortcut]').forEach(button=>button.onclick=()=>{adminTab=button.dataset.adminShortcut;renderAdmin();});
-  $('#enableAdminAlerts').onclick=async()=>{
+  const alertButton=$('#enableAdminAlerts');
+  if(pushConfigured){
+    alertButton.disabled=true;
+    alertButton.textContent='PREPARANDO AVISOS…';
+    void prepareAdminPush().then(()=>{
+      if(!alertButton.isConnected)return;
+      alertButton.disabled=false;
+      alertButton.textContent='ATIVAR AVISOS EM SEGUNDO PLANO';
+    }).catch(error=>{
+      console.warn('Não foi possível preparar os avisos em segundo plano:',error);
+      if(!alertButton.isConnected)return;
+      alertButton.disabled=false;
+      alertButton.textContent='TENTAR ATIVAR AVISOS';
+    });
+  }
+  alertButton.onclick=async()=>{
     const button=$('#enableAdminAlerts'),user=auth.currentUser;
     if(!isAdminPushConfigured())return toast('Ainda falta conectar o OneSignal e publicar o serviço externo. Consulte o guia no README do projeto.');
     if(!user||!isAdmin)return toast('Entre na conta administrativa antes de ativar avisos.');
     button.disabled=true;button.textContent='ATIVANDO AVISOS…';
-    try{await enableAdminPush(user);toast('Este dispositivo foi inscrito para receber avisos de novas reservas.');}
+    let enabled=false;
+    try{await enableAdminPush(user);enabled=true;toast('Este dispositivo foi inscrito para receber avisos de novas reservas.');}
     catch(error){console.warn('Não foi possível ativar avisos em segundo plano:',error);toast(error.message||'Não foi possível ativar os avisos. Confira a configuração do OneSignal.');}
-    finally{button.disabled=false;button.textContent=isAdminPushConfigured()?'ATIVAR AVISOS EM SEGUNDO PLANO':'CONFIGURAR AVISOS EM SEGUNDO PLANO';}
+    finally{button.disabled=false;button.textContent=enabled?'AVISOS ATIVOS NESTE DISPOSITIVO':isAdminPushConfigured()?'ATIVAR AVISOS EM SEGUNDO PLANO':'CONFIGURAR AVISOS EM SEGUNDO PLANO';}
   };
 }
 
@@ -1491,7 +1553,7 @@ function isVisibleAfterFinanceReset(order) {
   return !archivedStatus||created>=financeBaselineAt;
 }
 
-const siteResetCollections=['products','productCosts','categories','orders','coupons','campaigns','messages','comments','vipUsers','reservationLimits','messageLimits','settings'];
+const siteResetCollections=['products','productCosts','categories','orders','coupons','campaigns','messages','comments','vipUsers','reservationLimits','reservationSessionLimits','messageLimits','messageSessionLimits','commentLimits','settings'];
 
 async function collectSiteResetSnapshot() {
   const snapshots=await Promise.all(siteResetCollections.map(name=>getDocs(collection(db,name))));
@@ -1721,7 +1783,10 @@ $('#commentForm').onsubmit=async event=>{
   const button=formElement.querySelector('button[type="submit"]');if(button){button.disabled=true;button.textContent='PUBLICANDO…';}
   try{
     const name=String(currentUser?.name||user.displayName||user.email?.split('@')[0]||'Cliente').trim().slice(0,120);
-    await setDoc(doc(collection(db,'comments')),{uid:user.uid,name,text,status:'published',createdAt:serverTimestamp()});
+    const now=serverTimestamp(),commentRef=doc(collection(db,'comments')),limitRef=doc(db,'commentLimits',user.uid),batch=writeBatch(db);
+    batch.set(commentRef,{uid:user.uid,name,text,status:'published',createdAt:now});
+    batch.set(limitRef,{uid:user.uid,lastCommentId:commentRef.id,lastSubmittedAt:now});
+    await batch.commit();
     if(formElement?.reset)formElement.reset();
     toast('Comentário publicado para a comunidade.');
   }catch(error){console.error('Falha ao publicar comentário:',error);toast(friendlyFirestoreError(error));}
