@@ -1,0 +1,23 @@
+:root{color-scheme:light;--ink:#211916;--muted:#6e625c;--paper:#fffaf5;--pink:#ec008c;--lime:#d8ff35;--line:#eadfd6}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:radial-gradient(circle at 10% 10%,#fce1ef 0,transparent 28rem),radial-gradient(circle at 90% 85%,#e9f7a8 0,transparent 25rem),var(--paper);color:var(--ink);font-family:Arial,Helvetica,sans-serif}
+.action-shell{width:min(100% - 32px,640px);min-height:100vh;margin:0 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:36px 0}
+.brand{display:flex;flex-direction:column;align-items:center;gap:8px;margin-bottom:26px;color:var(--ink);text-align:center;text-decoration:none;font-size:10px;font-weight:800;letter-spacing:.18em}
+.brand img{width:86px;height:70px;object-fit:contain}
+.action-card{width:100%;padding:clamp(26px,6vw,54px);border:1px solid var(--line);border-radius:28px;background:rgba(255,255,255,.9);box-shadow:0 24px 70px rgba(47,26,38,.12);text-align:center}
+.trust-mark{width:54px;height:54px;margin:0 auto 22px;display:grid;place-items:center;border-radius:50%;background:var(--lime);color:var(--ink);font-size:28px;font-weight:900;box-shadow:0 5px 0 var(--pink)}
+.eyebrow{margin:0 0 12px;color:#a0005d;font-size:11px;font-weight:800;letter-spacing:.16em}
+h1{max-width:14ch;margin:0 auto 14px;font-size:clamp(30px,7vw,46px);line-height:1.04;letter-spacing:-.045em}
+.action-message{max-width:44ch;margin:0 auto 24px;color:var(--muted);font-size:16px;line-height:1.65}
+.action-button{width:100%;min-height:52px;margin:10px 0 0;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:999px;background:var(--pink);color:white;font-size:13px;font-weight:800;letter-spacing:.04em;text-decoration:none;cursor:pointer}
+.action-button:hover{background:#c80075}
+.reset-form{max-width:400px;margin:22px auto 0;text-align:left}
+.reset-form label{display:block;margin:14px 0 7px;font-size:10px;font-weight:800;letter-spacing:.12em}
+.reset-form input{width:100%;min-height:48px;padding:12px 14px;border:1px solid #cdbdb2;border-radius:12px;background:white;color:var(--ink);font:inherit}
+.reset-form input:focus{outline:3px solid rgba(236,0,140,.2);border-color:var(--pink)}
+.security-note{max-width:48ch;margin:25px auto 0;padding-top:20px;border-top:1px solid var(--line);color:var(--muted);font-size:12px;line-height:1.6}
+footer{margin-top:24px;color:#776c66;text-align:center;font-size:9px;font-weight:700;letter-spacing:.13em}
+[hidden]{display:none!important}
+@media(max-width:480px){.action-shell{width:min(100% - 22px,640px)}.action-card{border-radius:22px}.brand img{width:76px;height:62px}}
+@media(prefers-reduced-motion:no-preference){.action-card{animation:arrive .35s ease-out both}@keyframes arrive{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}}
+

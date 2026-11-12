@@ -25,6 +25,15 @@ import { enableAdminPush, isAdminPushConfigured, notifyAdminPushForOrder } from 
 
 /* GRAÇA GMC · vitrine, reservas e gestão operacional no Firebase. */
 const auth = getAuth(app);
+auth.languageCode = 'pt-BR';
+const authReturnOrigin = 'https://graca-454ff.web.app';
+function emailActionSettings(path='/?emailVerified=1') {
+  return {url:new URL(path,authReturnOrigin).toString()};
+}
+async function sendBrandedVerificationEmail(user) {
+  auth.languageCode='pt-BR';
+  return sendEmailVerification(user,emailActionSettings());
+}
 const db = getFirestore(app);
 const $ = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => [...r.querySelectorAll(s)];
@@ -145,7 +154,7 @@ function accountModal(mode='login',notice=''){
     try{
      const credential=await createUserWithEmailAndPassword(auth,email,String(f.get('password')));
      await updateProfile(credential.user,{displayName:name});
-     await sendEmailVerification(credential.user);
+     await sendBrandedVerificationEmail(credential.user);
      const profile={id:credential.user.uid,uid:credential.user.uid,name,email,phone:String(f.get('phone')).trim(),marketingConsent:f.get('marketingConsent')==='on',vip:false,emailVerified:false,created:new Date().toISOString(),address:{}};
      await saveCustomerProfile(profile);currentUser=null;memberNav();registrationWelcome();
     }catch(error){toast(authError(error))}
@@ -157,7 +166,7 @@ function accountModal(mode='login',notice=''){
     try{
      const credential=await signInWithEmailAndPassword(auth,email,String(f.get('password')));
      await reload(credential.user);
-     if(!credential.user.emailVerified){await sendEmailVerification(credential.user);await signOut(auth);currentUser=null;memberNav();return registrationWelcome(true)}
+     if(!credential.user.emailVerified){await sendBrandedVerificationEmail(credential.user);await signOut(auth);currentUser=null;memberNav();return registrationWelcome(true)}
      await credential.user.getIdToken(true);
      currentUser=profileFor(credential.user);saveCustomerProfile(currentUser);memberNav();
      const action=pendingMemberAction;pendingMemberAction='';closeModal();
@@ -166,11 +175,11 @@ function accountModal(mode='login',notice=''){
      else clientMenu();
     }catch(error){toast(authError(error))}
    };
-  $('#resetPassword').onclick=async()=>{const email=$('#loginForm [name="email"]').value.trim();if(!email)return toast('Informe seu e-mail para receber o link de recuperação.');try{await sendPasswordResetEmail(auth,email);toast('Enviamos um link seguro para redefinir sua senha.')}catch(error){toast(authError(error))}};
+  $('#resetPassword').onclick=async()=>{const email=$('#loginForm [name="email"]').value.trim();if(!email)return toast('Informe seu e-mail para receber o link de recuperação.');try{auth.languageCode='pt-BR';await sendPasswordResetEmail(auth,email,emailActionSettings('/'));toast('Enviamos um link seguro para redefinir sua senha.')}catch(error){toast(authError(error))}};
   $('#toSignup').onclick=()=>accountModal('signup');
  }
 }
-function registrationWelcome(resent=false){openModal('<div class="section-kicker">CONFIRME SEU E-MAIL</div><h2 id="modalTitle">QUASE LÁ.</h2><p>'+(resent?'Sua conta ainda não foi confirmada. Reenviamos o link de verificação.':'Enviamos o link de verificação para seu e-mail. Assim que confirmar, volte ao site e entre novamente. A confirmação libera automaticamente a Comunidade VIP.')+'</p><p class="fine-print">Depois da confirmação, você verá o aviso de acesso liberado e o link do grupo no painel da sua conta.</p><button class="pill-button dark" id="backToLogin">VOLTAR AO LOGIN</button>');$('#backToLogin').onclick=()=>accountModal('login')}
+function registrationWelcome(resent=false){const sent=resent?'Sua conta ainda não foi confirmada. Enviamos um novo link seguro.':'Enviamos um link seguro para confirmar que este endereço de e-mail pertence a você.';openModal(`<div class="section-kicker">CONFIRME SEU E-MAIL</div><h2 id="modalTitle">QUASE LÁ.</h2><p>${sent}</p><p>A confirmação libera a Comunidade VIP. Abra o e-mail enviado para você e use o botão de confirmação. A GRAÇA nunca pedirá sua senha ou um código de acesso por e-mail.</p><p class="fine-print">Depois de confirmar, volte ao site e entre novamente para ver o acesso liberado no painel da sua conta. Se não encontrar a mensagem, confira também a pasta Spam.</p><button class="pill-button dark" id="backToLogin">VOLTAR AO LOGIN</button>`);$('#backToLogin').onclick=()=>accountModal('login')}
 function memberNav(){const b=$('#accountBtn'),menu=$('#clientMenuBtn');if(!b||!menu)return;b.textContent=currentUser&&currentUser.emailVerified?'OI, '+currentUser.name.split(' ')[0].toUpperCase():'ENTRAR';menu.hidden=!(currentUser&&currentUser.emailVerified)}
 function clientMenu(){
  if(!currentUser)return accountModal('login');
@@ -1805,4 +1814,10 @@ $('#sortFilter').addEventListener('change',renderProducts);
 window.addEventListener('pageshow',event=>{if(event.persisted)window.location.reload();});
 updateCatalogSubscriptions();
 renderProducts();renderCart();memberNav();
+const emailVerifiedReturn=new URL(location.href);
+if(emailVerifiedReturn.searchParams.get('emailVerified')==='1'){
+  emailVerifiedReturn.searchParams.delete('emailVerified');
+  history.replaceState(null,'',emailVerifiedReturn.pathname+emailVerifiedReturn.search+emailVerifiedReturn.hash);
+  toast('E-mail confirmado. Entre na sua conta para acessar a Comunidade VIP.');
+}
 

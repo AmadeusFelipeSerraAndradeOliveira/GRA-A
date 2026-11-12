@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#fffaf5">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com; style-src 'self'; img-src 'self' data:; connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com; base-uri 'none'; object-src 'none'; form-action 'self'">
+  <meta name="description" content="Confirmação segura de acesso à GRAÇA — Gente, Moda e Comunidade.">
+  <title>Confirmação segura · GRAÇA</title>
+  <link rel="icon" type="image/png" href="assets/graca-logo-transparent.png">
+  <link rel="stylesheet" href="email-action.css">
+  <script type="module" src="email-action.js"></script>
+</head>
+<body>
+  <main class="action-shell">
+    <a class="brand" href="/" aria-label="GRAÇA — voltar ao início">
+      <img src="assets/graca-logo-transparent.png" alt="GRAÇA">
+      <span>GENTE, MODA E COMUNIDADE</span>
+    </a>
+    <section class="action-card" aria-labelledby="actionTitle">
+      <div class="trust-mark" aria-hidden="true">✓</div>
+      <p class="eyebrow">ÁREA SEGURA DA GRAÇA</p>
+      <h1 id="actionTitle">Estamos conferindo seu link.</h1>
+      <p id="actionMessage" class="action-message" role="status" aria-live="polite">Aguarde um instante enquanto validamos a solicitação.</p>
+      <form id="resetForm" class="reset-form" hidden>
+        <label for="newPassword">NOVA SENHA</label>
+        <input id="newPassword" name="newPassword" type="password" minlength="12" maxlength="128" autocomplete="new-password" required>
+        <label for="confirmPassword">CONFIRME A NOVA SENHA</label>
+        <input id="confirmPassword" name="confirmPassword" type="password" minlength="12" maxlength="128" autocomplete="new-password" required>
+        <button class="action-button" type="submit">SALVAR NOVA SENHA</button>
+      </form>
+      <a id="actionLink" class="action-button" href="/" hidden>VOLTAR À GRAÇA</a>
+      <p class="security-note">A GRAÇA nunca pede sua senha ou códigos de acesso por e-mail ou WhatsApp. Confira sempre o endereço do site antes de entrar.</p>
+    </section>
+    <footer>© GRAÇA · PALMAS, TO · GENTE, MODA E COMUNIDADE</footer>
+  </main>
+</body>
+</html>
+
