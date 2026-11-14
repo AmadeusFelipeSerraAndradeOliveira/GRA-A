@@ -21,7 +21,7 @@ import {
 import app from "./firebase.js";
 import { exampleProductTemplates } from "./catalog-seed.js";
 import { CLOUDINARY_CONFIG } from "./cloudinary-config.js";
-import { adminPushActivationUrl, isAdminPushOrigin, enableAdminPush, isAdminPushConfigured, notifyAdminPushForOrder, prepareAdminPush } from "./admin-push.js";
+import { adminPushActivationUrl, isAdminPushOrigin, enableAdminPush, isAdminPushConfigured, notifyAdminPushForOrder, prepareAdminPush } from "./admin-push.js?v=20261114-mobile-push-2";
 
 /* GRAÇA GMC · vitrine, reservas e gestão operacional no Firebase. */
 const auth = getAuth(app);

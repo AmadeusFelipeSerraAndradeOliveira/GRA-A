@@ -1,4 +1,4 @@
-import { ADMIN_PUSH_CONFIG } from './push-config.js';
+import { ADMIN_PUSH_CONFIG } from './push-config.js?v=20261114-mobile-push-2';
 
 let oneSignalPromise = null;
 
