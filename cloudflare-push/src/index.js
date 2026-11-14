@@ -93,29 +93,50 @@ async function handleNewOrder(request,env,origin){
   const createdAt=Date.parse(firestoreField(order,'createdAt','timestampValue')||'');
   if(!Number.isFinite(createdAt)||Date.now()-createdAt>10*60*1000||createdAt>Date.now()+60*1000)return responseJson({error:'A reserva está fora da janela de envio de avisos.'},409,origin,env);
   const dedupeKey=`order:${orderId}`;
-  if(await env.PUSH_STATE.get(dedupeKey))return responseJson({ok:true,duplicate:true},200,origin,env);
+  const previousState=await env.PUSH_STATE.get(dedupeKey);
+  if(previousState==='sent')return responseJson({ok:true,duplicate:true},200,origin,env);
+  if(previousState==='sending')return responseJson({ok:true,pending:true},202,origin,env);
   const subscriptions=await env.PUSH_STATE.list({prefix:'admin:',limit:1000});
   const subscriptionIds=subscriptions.keys.map(item=>item.name.slice('admin:'.length)).filter(Boolean);
   if(!subscriptionIds.length)return responseJson({ok:true,subscribedDevices:0},202,origin,env);
   await env.PUSH_STATE.put(dedupeKey,'sending',{expirationTtl:120});
-  const pushResponse=await fetch('https://api.onesignal.com/notifications',{
+  let pushResponse;
+  try{pushResponse=await fetch('https://api.onesignal.com/notifications?c=push',{
     method:'POST',headers:{'Content-Type':'application/json','Authorization':`Key ${env.ONESIGNAL_REST_API_KEY}`},
+    signal:AbortSignal.timeout(15000),
     body:JSON.stringify({
       app_id:env.ONESIGNAL_APP_ID,
       target_channel:'push',
       include_subscription_ids:subscriptionIds,
-      headings:{pt:'GRAÇA · Nova reserva'},
-      contents:{pt:'Uma nova solicitação chegou. Abra o painel para conferir os detalhes.'},
-      url:env.SITE_URL||'https://graca-454ff.web.app'
+      // OneSignal requires the "en" fallback even for Portuguese-only messages.
+      headings:{en:'GRAÇA · Nova reserva',pt:'GRAÇA · Nova reserva'},
+      contents:{en:'Uma nova solicitação chegou. Abra o painel para conferir os detalhes.',pt:'Uma nova solicitação chegou. Abra o painel para conferir os detalhes.'},
+      url:new URL('/#admin',env.SITE_URL||'https://gracaoficial.com').href
     })
-  });
+  });}catch{
+    await env.PUSH_STATE.delete(dedupeKey);
+    return responseJson({error:'Não foi possível conectar ao OneSignal. A reserva continua salva.',code:'ONESIGNAL_UNAVAILABLE'},502,origin,env);
+  }
+  const result=await pushResponse.json().catch(()=>null);
   if(!pushResponse.ok){
     await env.PUSH_STATE.delete(dedupeKey);
-    console.error('OneSignal recusou a notificação:',pushResponse.status,await pushResponse.text());
-    return responseJson({error:'O serviço de avisos não aceitou a notificação.'},502,origin,env);
+    const code=pushResponse.status===401||pushResponse.status===403?'ONESIGNAL_AUTH_ERROR'
+      :pushResponse.status===429?'ONESIGNAL_RATE_LIMIT'
+      :pushResponse.status===400?'ONESIGNAL_INVALID_REQUEST':'ONESIGNAL_UNAVAILABLE';
+    // Keep provider credentials and recipient identifiers out of public responses.
+    console.error('OneSignal recusou a notificação:',{status:pushResponse.status,code,requestId:pushResponse.headers.get('x-request-id')});
+    return responseJson({error:'O serviço de avisos não aceitou a notificação. A reserva continua salva.',code,providerStatus:pushResponse.status},502,origin,env);
+  }
+  if(result&&typeof result==='object'&&!result.id&&('id' in result||'errors' in result)){
+    await env.PUSH_STATE.delete(dedupeKey);
+    return responseJson({ok:true,notificationCreated:false,subscribedDevices:0,reason:'no_active_subscriptions'},202,origin,env);
+  }
+  if(!result||typeof result.id!=='string'||!result.id){
+    await env.PUSH_STATE.delete(dedupeKey);
+    return responseJson({error:'O OneSignal não confirmou a criação do aviso. A reserva continua salva.',code:'ONESIGNAL_INVALID_RESPONSE'},502,origin,env);
   }
   await env.PUSH_STATE.put(dedupeKey,'sent',{expirationTtl:60*60*24});
-  return responseJson({ok:true,subscribedDevices:subscriptionIds.length},200,origin,env);
+  return responseJson({ok:true,notificationCreated:true,subscribedDevices:subscriptionIds.length},200,origin,env);
 }
 
 export default {

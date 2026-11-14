@@ -7,7 +7,7 @@ const {test}=require('node:test');
 const root=path.resolve(__dirname,'..');
 const configSource=fs.readFileSync(path.join(root,'push-config.js'),'utf8').replace('export const','const');
 const source=fs.readFileSync(path.join(root,'admin-push.js'),'utf8').replace(/^import .*;\r?\n/,'').replace(/export /g,'');
-function harness({origin='https://gracaoficial.com',initError=null,downloadFails=false}={}){
+function harness({origin='https://gracaoficial.com',initError=null,downloadFails=false,workerFailure=null}={}){
   const stats={initializations:0,scripts:0,requests:[],permissionRequests:0};
   let script=null;
   const sdk={
@@ -29,9 +29,9 @@ function harness({origin='https://gracaoficial.com',initError=null,downloadFails
     });}}
   };
   const context=vm.createContext({window,document,URL,Date,setTimeout,
-    fetch:async(url,options)=>{stats.requests.push({url,options});return {ok:true,json:async()=>({})};}});
+    fetch:async(url,options)=>{stats.requests.push({url,options});return {ok:!workerFailure,status:workerFailure?502:200,json:async()=>workerFailure||({})};}});
   vm.runInContext(configSource,context);
-  const load=()=>vm.runInContext(`(()=>{${source}\nreturn {prepareAdminPush,enableAdminPush,adminPushActivationUrl,isAdminPushOrigin};})()`,context);
+  const load=()=>vm.runInContext(`(()=>{${source}\nreturn {prepareAdminPush,enableAdminPush,adminPushActivationUrl,isAdminPushOrigin,notifyAdminPushForOrder};})()`,context);
   return {api:load(),load,stats,sdk,window};
 }
 const user={email:'admin@example.test',emailVerified:true,isAnonymous:false,getIdToken:async()=>'test-token'};
@@ -79,6 +79,11 @@ test('notificações bloqueadas não inscrevem o dispositivo',async()=>{
   const h=harness();h.sdk.Notifications.permissionNative='denied';
   await assert.rejects(h.api.enableAdminPush(user),/bloqueados neste navegador/);
   assert.equal(h.stats.requests.length,0);
+});
+test('falha do Worker preserva código e status do OneSignal para diagnóstico',async()=>{
+  const h=harness({workerFailure:{error:'A reserva continua salva.',code:'ONESIGNAL_AUTH_ERROR',providerStatus:403}});
+  await assert.rejects(h.api.notifyAdminPushForOrder('local-order-test',user),error=>
+    error.code==='ONESIGNAL_AUTH_ERROR'&&error.status===502&&error.providerStatus===403);
 });
 
 test('botão em outro domínio abre o painel autorizado sem preparar o SDK',()=>{

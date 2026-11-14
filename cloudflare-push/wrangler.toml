@@ -5,7 +5,7 @@ compatibility_date = "2026-11-09"
 [vars]
 FIREBASE_PROJECT_ID = "graca-454ff"
 ONESIGNAL_APP_ID = "2fbb33eb-59e8-4e5e-8e96-f99e385a3e41"
-SITE_URL = "https://graca-454ff.web.app"
+SITE_URL = "https://gracaoficial.com"
 ALLOWED_ORIGINS = "https://graca-454ff.web.app,https://graca-454ff.firebaseapp.com,https://gracaoficial.com,https://www.gracaoficial.com,http://127.0.0.1:5500,http://localhost:5500,http://127.0.0.1:5501,http://localhost:5501"
 
 [[kv_namespaces]]

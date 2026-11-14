@@ -43,6 +43,10 @@ O aplicativo OneSignal atual aceita inscrições somente em `https://gracaoficia
 
 O SDK inicializa uma única vez por página, inclusive quando o painel é aberto várias vezes. Se a inicialização falhar, recarregue a página; uma falha no download do script permite tentar novamente. Valide a integração local com `node --test scripts/admin-push-test.cjs`.
 
+O envio ao OneSignal inclui `en` como idioma padrão obrigatório e `pt` como tradução, ambos com a mensagem em português. O Worker só registra o aviso como enviado após receber um ID de notificação não vazio; isso confirma a criação no OneSignal, não a entrega ao aparelho. Falhas HTTP e de conexão liberam a marca temporária para permitir nova tentativa dentro da janela do pedido. Uma resposta sem destinatários ativos não é apresentada como envio concluído. Os códigos `ONESIGNAL_INVALID_REQUEST`, `ONESIGNAL_AUTH_ERROR`, `ONESIGNAL_RATE_LIMIT` e `ONESIGNAL_UNAVAILABLE` distinguem falhas sem expor chaves ou IDs de destinatários ao cliente.
+
+Execute `npm run test:push` para validar o navegador e o Worker com tokens RSA e serviços simulados, sem criar pedidos ou enviar notificações reais. Alterações em `cloudflare-push/src/index.js` precisam ser publicadas separadamente com `wrangler deploy` na pasta `cloudflare-push`; publicar somente o Firebase Hosting não atualiza esse serviço. O segredo `ONESIGNAL_REST_API_KEY` deve permanecer na Cloudflare.
+
 1. O app OneSignal **GRAÇA GMC - Avisos administrativos** já está criado com Web Push para `https://gracaoficial.com`. O App ID público já está preenchido em `push-config.js` e `cloudflare-push/wrangler.toml`.
 2. Entre em uma conta Cloudflare e abra um terminal na pasta `cloudflare-push`:
 

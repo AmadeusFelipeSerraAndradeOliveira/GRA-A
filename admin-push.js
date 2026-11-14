@@ -106,7 +106,13 @@ async function workerRequest(path,user,body) {
     throw new Error('Não foi possível conectar ao serviço de avisos. Abra o site pelo endereço HTTPS publicado e tente novamente.');
   }
   const result=await response.json().catch(()=>({}));
-  if(!response.ok)throw new Error(result.error||'O serviço de avisos recusou a solicitação.');
+  if(!response.ok){
+    const error=new Error(result.error||'O serviço de avisos recusou a solicitação.');
+    error.code=result.code||'PUSH_REQUEST_FAILED';
+    error.status=response.status;
+    if(Number.isInteger(result.providerStatus))error.providerStatus=result.providerStatus;
+    throw error;
+  }
   return result;
 }
 
