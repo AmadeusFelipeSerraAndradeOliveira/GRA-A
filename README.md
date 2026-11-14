@@ -35,15 +35,15 @@ Depois de publicar o Worker, abra **Produtos → Configurar upload** no painel, 
 
 ## WhatsApp e avisos de novas reservas
 
-As reservas novas aparecem em tempo real quando o painel administrativo está aberto. Também foi preparada uma inscrição de push com OneSignal: depois de publicar o Worker descrito abaixo, clique em **Visão Geral → Ativar avisos em segundo plano** em cada aparelho administrativo. O app OneSignal da GRAÇA já foi criado e o site `https://graca-454ff.web.app` foi cadastrado nele. O serviço usa um Worker gratuito fora do Firebase para enviar o push e o OneSignal para entregá-lo ao navegador; o segredo da API fica no Cloudflare, nunca no site.
+As reservas novas aparecem em tempo real quando o painel administrativo está aberto. Também foi preparada uma inscrição de push com OneSignal: depois de publicar o Worker descrito abaixo, clique em **Visão Geral → Ativar avisos em segundo plano** em cada aparelho administrativo. O app OneSignal da GRAÇA já foi criado e o site `https://gracaoficial.com` foi cadastrado nele. O serviço usa um Worker gratuito fora do Firebase para enviar o push e o OneSignal para entregá-lo ao navegador; o segredo da API fica no Cloudflare, nunca no site.
 
 ### Ativar notificações fora do navegador
 
-O aplicativo OneSignal atual aceita inscrições somente em `https://graca-454ff.web.app`. Em outros endereços (incluindo `firebaseapp.com`, domínio próprio e ambiente local), o botão abre esse painel para concluir a ativação; entre novamente na conta administrativa se necessário. `push-config.js` registra esse endereço em `oneSignalOrigin`. Permitir uma origem no Worker não altera a origem aceita pelo OneSignal. Para usar outro domínio, configure um aplicativo OneSignal para ele e ajuste também os IDs e as origens do serviço de avisos.
+O aplicativo OneSignal atual aceita inscrições somente em `https://gracaoficial.com`. Em outros endereços (incluindo `web.app`, `firebaseapp.com` e ambiente local), o botão abre esse painel para concluir a ativação; entre novamente na conta administrativa se necessário. `push-config.js` registra esse endereço em `oneSignalOrigin`. Permitir uma origem no Worker não altera a origem aceita pelo OneSignal. Para usar outro domínio, configure um aplicativo OneSignal para ele e ajuste também os IDs e as origens do serviço de avisos.
 
 O SDK inicializa uma única vez por página, inclusive quando o painel é aberto várias vezes. Se a inicialização falhar, recarregue a página; uma falha no download do script permite tentar novamente. Valide a integração local com `node --test scripts/admin-push-test.cjs`.
 
-1. O app OneSignal **GRAÇA GMC - Avisos administrativos** já está criado com Web Push para `https://graca-454ff.web.app`. O App ID público já está preenchido em `push-config.js` e `cloudflare-push/wrangler.toml`.
+1. O app OneSignal **GRAÇA GMC - Avisos administrativos** já está criado com Web Push para `https://gracaoficial.com`. O App ID público já está preenchido em `push-config.js` e `cloudflare-push/wrangler.toml`.
 2. Entre em uma conta Cloudflare e abra um terminal na pasta `cloudflare-push`:
 
    ```powershell

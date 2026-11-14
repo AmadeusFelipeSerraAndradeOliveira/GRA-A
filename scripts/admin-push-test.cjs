@@ -7,7 +7,7 @@ const {test}=require('node:test');
 const root=path.resolve(__dirname,'..');
 const configSource=fs.readFileSync(path.join(root,'push-config.js'),'utf8').replace('export const','const');
 const source=fs.readFileSync(path.join(root,'admin-push.js'),'utf8').replace(/^import .*;\r?\n/,'').replace(/export /g,'');
-function harness({origin='https://graca-454ff.web.app',initError=null,downloadFails=false}={}){
+function harness({origin='https://gracaoficial.com',initError=null,downloadFails=false}={}){
   const stats={initializations:0,scripts:0,requests:[],permissionRequests:0};
   let script=null;
   const sdk={
@@ -37,10 +37,10 @@ function harness({origin='https://graca-454ff.web.app',initError=null,downloadFa
 const user={email:'admin@example.test',emailVerified:true,isAnonymous:false,getIdToken:async()=>'test-token'};
 
 test('outro domínio não carrega nem inicializa o SDK e indica o painel correto',async()=>{
-  const h=harness({origin:'https://gracaoficial.com'});
+  const h=harness({origin:'https://graca-454ff.web.app'});
   assert.equal(h.api.isAdminPushOrigin(),false);
-  assert.equal(h.api.adminPushActivationUrl(),'https://graca-454ff.web.app/#admin');
-  await assert.rejects(h.api.prepareAdminPush(),/Ative os avisos no painel em https:\/\/graca-454ff.web.app/);
+  assert.equal(h.api.adminPushActivationUrl(),'https://gracaoficial.com/#admin');
+  await assert.rejects(h.api.prepareAdminPush(),/Ative os avisos no painel em https:\/\/gracaoficial.com/);
   await assert.rejects(h.api.enableAdminPush(user),/Ative os avisos no painel/);
   assert.equal(h.stats.scripts,0);
   assert.equal(h.stats.initializations,0);
@@ -59,7 +59,7 @@ test('preparações concorrentes e ativação compartilham uma inicialização',
   assert.equal(JSON.parse(h.stats.requests[0].options.body).subscriptionId,'test-subscription');
 });
 test('falha de init preserva o erro original sem reinicializar o SDK',async()=>{
-  const failure=new Error('Can only be used on: https://graca-454ff.web.app');
+  const failure=new Error('Can only be used on: https://gracaoficial.com');
   const h=harness({initError:failure});
   const isOriginalFailure=error=>error.cause===failure&&error.requiresReload===true;
   await assert.rejects(h.api.prepareAdminPush(),isOriginalFailure);
@@ -88,14 +88,14 @@ test('botão em outro domínio abre o painel autorizado sem preparar o SDK',()=>
   const button={closest:()=>({after:element=>{notice=element;}})};
   const context=vm.createContext({URL,orders:[],customers:[],activeProducts:()=>[],isVisibleAfterFinanceReset:()=>true,
     isAdminPushConfigured:()=>true,isAdminPushOrigin:()=>false,
-    adminPushActivationUrl:()=>'https://graca-454ff.web.app/#admin',
+    adminPushActivationUrl:()=>'https://gracaoficial.com/#admin',
     $:()=>button,$$:()=>[],prepareAdminPush:()=>{prepared++;return Promise.resolve();},
     document:{createElement:()=>({})},window:{location:{assign:url=>{destination=url;}}}});
   vm.runInContext(view,context);
   context.renderAdminOverview({});
   assert.equal(button.textContent,'ABRIR PAINEL PARA ATIVAR AVISOS');
-  assert.match(notice.textContent,/graca-454ff.web.app/);
+  assert.match(notice.textContent,/gracaoficial.com/);
   button.onclick();
-  assert.equal(destination,'https://graca-454ff.web.app/#admin');
+  assert.equal(destination,'https://gracaoficial.com/#admin');
   assert.equal(prepared,0);
 });
