@@ -1080,24 +1080,79 @@ function getAdminPassersby() {
   return [...grouped.values()].sort((a,b)=>safeDate(b.latest.createdAt)-safeDate(a.latest.createdAt));
 }
 
+let adminCustomerFilter='all',adminCustomerSort='recent',adminCustomerPage=1;
+
+function customerSearchText(value) {
+  return String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLocaleLowerCase('pt-BR');
+}
+
+function getAdminCustomerDirectory() {
+  const accounts=new Map();
+  for(const customer of customers){
+    const uid=String(customer.uid||customer.id||'');
+    accounts.set(uid,{key:`account:${uid}`,uid,customer,member:null});
+  }
+  for(const member of vipUsers){
+    const uid=String(member.uid||member.id||'');
+    const entry=accounts.get(uid)||{key:`account:${uid}`,uid,customer:null,member:null};
+    entry.member=member;accounts.set(uid,entry);
+  }
+  const directory=[...accounts.values()].map(entry=>{
+    const {customer,member,uid}=entry;
+    const requests=orders.filter(order=>String(order.uid||'')===uid).sort((a,b)=>safeDate(b.createdAt)-safeDate(a.createdAt));
+    const latest=requests[0];
+    return {...entry,type:member?.status==='active'?'vip':'customer',
+      name:customer?.name||member?.name||latest?.customerName||'Cliente',
+      email:customer?.email||member?.email||'',phone:customer?.phone||member?.phone||latest?.phone||'',
+      createdAt:customer?.createdAt||member?.createdAt||latest?.createdAt,
+      count:requests.length,latest,requests};
+  });
+  for(const visitor of getAdminPassersby()){
+    const phone=normalizeBrazilPhone(visitor.phone);
+    const requests=orders.filter(order=>phone?normalizeBrazilPhone(order.phone)===phone:String(order.uid||'')===String(visitor.latest.uid||''));
+    directory.push({...visitor,type:'visitor',email:'',createdAt:visitor.latest.createdAt,requests});
+  }
+  return directory;
+}
+
 function renderAdminCustomers() {
-  const needle=adminVipSearch.trim().toLowerCase();
-  const filteredVip=vipUsers.filter(member=>`${member.name||''} ${member.email||''} ${member.phone||''}`.toLowerCase().includes(needle));
-  const vipRows=filteredVip.map(member=>`<tr><td>${htm(member.name)}</td><td>${htm(member.email)}</td><td>${htm(member.phone||'—')}</td><td>${member.status==='active'?'ATIVO':'INATIVO'}</td><td>${safeDate(member.createdAt).toLocaleDateString('pt-BR')}</td><td><button class="mini-button ${member.status==='active'?'danger':'primary'}" data-vip-status="${htm(member.uid)}" data-next-status="${member.status==='active'?'removed':'active'}">${member.status==='active'?'REMOVER VIP':'REATIVAR VIP'}</button></td></tr>`).join('');
-  const filteredCustomers=customers.filter(customer=>`${customer.name||''} ${customer.email||''} ${customer.phone||''}`.toLowerCase().includes(needle));
-  const customerRows=filteredCustomers.map(customer=>[htm(customer.name),htm(customer.email),htm(customer.phone),customer.marketingConsent?'ACEITOU':'NÃO ACEITOU',safeDate(customer.createdAt).toLocaleDateString('pt-BR'),`<button class="mini-button danger" data-delete-customer="${htm(customer.uid||customer.id)}">EXCLUIR CADASTRO</button>`]);
-  const digitsNeedle=normalizeBrazilPhone(adminVipSearch);
-  const filteredVisitors=getAdminPassersby().filter(visitor=>`${visitor.name} ${visitor.phone} ${visitor.latest.confirmationCode||visitor.latest.id} ${visitor.latest.status||''}`.toLowerCase().includes(needle)||(digitsNeedle.length>=4&&normalizeBrazilPhone(visitor.phone).includes(digitsNeedle)));
-  const visitorRows=filteredVisitors.map(visitor=>[htm(visitor.name),htm(visitor.phone||'—'),`${visitor.count} solicitação(ões)`,`${htm(visitor.latest.confirmationCode||visitor.latest.id)} · ${htm(visitor.latest.status||'')}`,safeDate(visitor.latest.createdAt).toLocaleDateString('pt-BR'),whatsappLink(visitor.latest)]);
-  $('#adminContent').innerHTML=`<div class="section-kicker">CLIENTES / COMUNIDADE VIP</div><h2>CLIENTES E MEMBROS VIP</h2><p>Remover VIP desativa a associação sem apagar o cliente. Excluir a ficha do cliente também remove a associação VIP; pedidos e histórico financeiro permanecem.</p><div class="admin-toolbar"><span>${customers.length} contas · ${vipUsers.filter(member=>member.status==='active').length} membros VIP ativos · ${getAdminPassersby().length} passantes</span><div><button id="vipInviteSetup" class="mini-button">CONFIGURAR LINK DO GRUPO</button> <button id="newVipMember" class="mini-button primary">+ CADASTRAR VIP</button></div></div><div class="admin-filter-bar"><label>BUSCAR CLIENTE OU PASSANTE POR NOME, E-MAIL, TELEFONE OU PEDIDO<input id="adminVipSearch" type="search" value="${htm(adminVipSearch)}" placeholder="Digite nome, e-mail, telefone ou código"></label></div><section class="finance-panel"><h3>MEMBROS VIP · ${filteredVip.length}</h3>${filteredVip.length?`<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>NOME</th><th>E-MAIL</th><th>WHATSAPP</th><th>ACESSO</th><th>CADASTRO</th><th>AÇÕES</th></tr></thead><tbody>${vipRows}</tbody></table></div>`:'<div class="empty-state">NENHUM MEMBRO VIP CORRESPONDE À BUSCA.</div>'}</section><section class="finance-panel"><div class="admin-toolbar"><h3>CONTAS CADASTRADAS · ${filteredCustomers.length}</h3><button class="mini-button danger" id="resetCustomerProfiles" ${(customers.length||vipUsers.length)?'':'disabled'}>REDEFINIR PERFIS E VIPS</button></div><p class="fine-print">Remove fichas e associações VIP depois de baixar uma cópia. As contas de login do Firebase Auth permanecem ativas.</p>${filteredCustomers.length?table(['NOME','E-MAIL','WHATSAPP','OFERTAS','CADASTRO','AÇÕES'],customerRows):'<div class="empty-state">NENHUMA CONTA CADASTRADA CORRESPONDE À BUSCA.</div>'}</section><section class="finance-panel"><h3>PASSANTES COM SOLICITAÇÕES · ${filteredVisitors.length}</h3>${filteredVisitors.length?table(['NOME','WHATSAPP','RESERVAS','ÚLTIMA SOLICITAÇÃO','DATA','CONTATO'],visitorRows):'<div class="empty-state">NENHUM PASSANTE COM RESERVA CORRESPONDE À BUSCA.</div>'}<p class="fine-print">A busca considera até 500 contas e as 250 solicitações mais recentes sincronizadas pelo painel.</p></section>`;
-  $('#adminVipSearch').oninput=event=>{adminVipSearch=event.target.value;renderAdminCustomers();const input=$('#adminVipSearch');input?.focus();input?.setSelectionRange(adminVipSearch.length,adminVipSearch.length);};
+  const directory=getAdminCustomerDirectory();
+  const needle=customerSearchText(adminVipSearch.trim()),digits=normalizeBrazilPhone(adminVipSearch);
+  const counts={all:directory.length,vip:0,customer:0,visitor:0};
+  directory.forEach(entry=>counts[entry.type]++);
+  const filtered=directory.filter(entry=>{
+    if(adminCustomerFilter!=='all'&&entry.type!==adminCustomerFilter)return false;
+    const searchable=customerSearchText([entry.name,entry.email,entry.phone,...entry.requests.map(order=>`${order.confirmationCode||order.id} ${order.status||''}`)].join(' '));
+    return searchable.includes(needle)||(digits.length>=4&&normalizeBrazilPhone(entry.phone).includes(digits));
+  });
+  filtered.sort((a,b)=>adminCustomerSort==='name'?a.name.localeCompare(b.name,'pt-BR'):
+    adminCustomerSort==='orders'?b.count-a.count:safeDate(b.createdAt)-safeDate(a.createdAt));
+  const pageSize=12,pages=Math.max(1,Math.ceil(filtered.length/pageSize));
+  adminCustomerPage=Math.min(Math.max(1,adminCustomerPage),pages);
+  const offset=(adminCustomerPage-1)*pageSize,visible=filtered.slice(offset,offset+pageSize);
+  const rows=visible.map(entry=>{
+    const {customer,member}=entry;
+    const typeName=entry.type==='vip'?'VIP':entry.type==='visitor'?'Passante':'Cliente';
+    const observation=entry.type==='vip'?'Membro da Comunidade VIP':entry.type==='visitor'?`${entry.count} ${entry.count===1?'solicitação':'solicitações'} de reserva`:member?.status==='removed'?'Acesso VIP removido':'Conta cadastrada';
+    const latest=entry.latest?`${entry.latest.confirmationCode||entry.latest.id} · ${entry.latest.status||''}`:'';
+    const phone=normalizeBrazilPhone(entry.phone),whatsapp=/^\d{10,13}$/.test(phone)?`<a href="https://wa.me/${phone.length<=11?'55':''}${phone}" target="_blank" rel="noopener noreferrer">Abrir WhatsApp ↗</a>`:'';
+    const vipAction=member?`<button type="button" data-vip-status="${htm(member.uid||member.id)}" data-next-status="${member.status==='active'?'removed':'active'}">${member.status==='active'?'REMOVER VIP':'REATIVAR VIP'}</button>`:'';
+    const deleteAction=customer?`<button type="button" class="customer-delete-action" data-delete-customer="${htm(customer.uid||customer.id)}">Excluir cadastro</button>`:'';
+    const actions=whatsapp||vipAction||deleteAction?`<details class="customer-row-actions"><summary aria-label="Ações para ${htm(entry.name)}">Gerenciar <span aria-hidden="true">⌄</span></summary><div>${whatsapp}${vipAction}${deleteAction}</div></details>`:'<span class="fine-print">Sem ações</span>';
+    return `<tr><td><div class="customer-identity"><span class="customer-avatar" aria-hidden="true">${htm(entry.name.trim().charAt(0).toLocaleUpperCase('pt-BR'))}</span><strong>${htm(entry.name)}</strong></div></td><td>${entry.email?`<a href="mailto:${htm(entry.email)}">${htm(entry.email)}</a>`:'<span class="customer-muted">—</span>'}</td><td class="customer-phone">${htm(entry.phone||'—')}</td><td><span class="customer-type customer-type-${entry.type}">${typeName}</span></td><td><span>${htm(observation)}</span>${entry.count&&entry.type!=='visitor'?`<small>${entry.count} ${entry.count===1?'solicitação':'solicitações'}</small>`:''}${latest?`<small class="customer-order-note">${htm(latest)}</small>`:''}</td><td class="customer-date">${entry.createdAt?safeDate(entry.createdAt).toLocaleDateString('pt-BR'):'—'}</td><td>${actions}</td></tr>`;
+  }).join('');
+  $('#adminContent').innerHTML=`<section class="customer-directory"><div class="section-kicker">GRAÇA / RELACIONAMENTO</div><div class="customer-directory-heading"><div><h2>Gestão de clientes</h2><p>Clientes, membros VIP e passantes em um só lugar.</p></div><div class="customer-heading-actions"><button id="vipInviteSetup" class="mini-button">Link do grupo</button><button id="newVipMember" class="mini-button primary">+ Cadastrar VIP</button></div></div><div class="customer-search-row"><label for="adminVipSearch">BUSCAR CLIENTES<input id="adminVipSearch" type="search" value="${htm(adminVipSearch)}" placeholder="Buscar por nome, e-mail, telefone ou pedido…"></label></div><div class="customer-controls"><div class="customer-filter-tabs" role="group" aria-label="Filtrar clientes">${[['all','Todos'],['vip','VIP'],['customer','Clientes'],['visitor','Passantes']].map(([key,label])=>`<button type="button" data-customer-filter="${key}" aria-pressed="${adminCustomerFilter===key}" class="${adminCustomerFilter===key?'active':''}">${label} <span>${counts[key]}</span></button>`).join('')}</div><label class="customer-sort">Ordenar por<select id="adminCustomerSort"><option value="recent" ${adminCustomerSort==='recent'?'selected':''}>Mais recentes</option><option value="name" ${adminCustomerSort==='name'?'selected':''}>Nome A–Z</option><option value="orders" ${adminCustomerSort==='orders'?'selected':''}>Mais solicitações</option></select></label></div><div class="customer-table-card"><div class="admin-table-wrap"><table class="customer-directory-table"><caption class="sr-only">Clientes, membros VIP e passantes com solicitações</caption><thead><tr><th scope="col">Nome</th><th scope="col">E-mail</th><th scope="col">Telefone / WhatsApp</th><th scope="col">Status</th><th scope="col">Observação</th><th scope="col">Cadastro</th><th scope="col">Ações</th></tr></thead><tbody>${rows||'<tr><td colspan="7" class="customer-empty">Nenhum cliente encontrado. Tente outro nome, telefone ou filtro.</td></tr>'}</tbody></table></div></div><div class="customer-directory-footer"><span>${filtered.length?`Mostrando ${offset+1}–${offset+visible.length} de ${filtered.length}`:'Nenhum resultado'} ${filtered.length===1?'cliente':'clientes'}</span><nav class="customer-pagination" aria-label="Páginas de clientes"><button id="customerPagePrevious" class="mini-button" ${adminCustomerPage<=1?'disabled':''}>Anterior</button><span aria-current="page">${adminCustomerPage} / ${pages}</span><button id="customerPageNext" class="mini-button" ${adminCustomerPage>=pages?'disabled':''}>Próxima</button></nav></div><details class="customer-data-settings"><summary>Gestão de cadastros</summary><p class="fine-print">Remover VIP mantém o cadastro. Excluir o cadastro remove também a associação VIP; a conta de login e os pedidos permanecem.</p><button class="mini-button danger" id="resetCustomerProfiles" ${(customers.length||vipUsers.length)?'':'disabled'}>REDEFINIR PERFIS E VIPS</button><p class="fine-print">A busca considera até 500 contas e as 250 solicitações mais recentes sincronizadas pelo painel.</p></details></section>`;
+  $('#adminVipSearch').oninput=event=>{adminVipSearch=event.target.value;adminCustomerPage=1;renderAdminCustomers();const input=$('#adminVipSearch');input?.focus();};
+  $$('[data-customer-filter]').forEach(button=>button.onclick=()=>{adminCustomerFilter=button.dataset.customerFilter;adminCustomerPage=1;renderAdminCustomers();});
+  $('#adminCustomerSort').onchange=event=>{adminCustomerSort=event.target.value;adminCustomerPage=1;renderAdminCustomers();};
+  $('#customerPagePrevious').onclick=()=>{adminCustomerPage--;renderAdminCustomers();};
+  $('#customerPageNext').onclick=()=>{adminCustomerPage++;renderAdminCustomers();};
   $('#vipInviteSetup').onclick=configureVipInvite;
   $('#newVipMember').onclick=manualVipEditor;
   $('#resetCustomerProfiles').onclick=()=>openProtectedBulkDeleteDialog('customers');
   $$('[data-vip-status]').forEach(button=>button.onclick=()=>updateVipMemberStatus(button.dataset.vipStatus,button.dataset.nextStatus));
   $$('[data-delete-customer]').forEach(button=>button.onclick=()=>deleteCustomerRecord(button.dataset.deleteCustomer));
 }
-
 async function deleteCustomerRecord(uid) {
   if(!isAdmin||!uid)return;
   const customer=customers.find(item=>(item.uid||item.id)===uid);

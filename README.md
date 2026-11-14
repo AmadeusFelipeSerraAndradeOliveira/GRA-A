@@ -96,6 +96,8 @@ Uma mensagem automática pelo WhatsApp, sem clique do cliente, não pode ser env
 
 ## Dados principais
 
+O painel **Clientes / VIP** apresenta uma tabela única, com busca por nome, e-mail, telefone e pedido; filtros Todos, VIP, Clientes e Passantes; ordenação e páginas de 12 registros. Conta e associação VIP do mesmo UID aparecem uma única vez, com as ações de ambas disponíveis em **Gerenciar**. Contas com UIDs distintos continuam separadas mesmo quando compartilham um contato. WhatsApp e os fluxos existentes de remoção VIP e exclusão de cadastro são preservados. A redefinição em lote fica em **Gestão de cadastros**, com as mesmas confirmações e cópia de segurança. Execute `npm run test:customers` para validar a composição e os filtros da tabela.
+
 - `products` guarda catálogo, quantidades por tamanho e URLs do Cloudinary; `productCosts` mantém custo privado. Produtos antigos sem divisão por tamanho carregam o estoque total na primeira variação até a equipe informar os números reais.
 - `orders` guarda solicitações e histórico. A redefinição completa do site pode apagá-los somente após gerar uma cópia JSON, confirmar a senha administrativa e digitar `REDEFINIR SITE`; os cadastros de clientes, contas Firebase e administradores são preservados. Esse fluxo não apaga as fotos armazenadas no Cloudinary.
 - `customers` mantém fichas de cliente; ao excluir uma ficha pelo painel, a associação em `vipUsers` também é removida no mesmo lote. A ação **Redefinir perfis e VIPs** baixa uma cópia, exige senha e confirmação digitada, apaga as fichas e vínculos VIP, e mantém os logins do Firebase Authentication, pedidos e financeiro.

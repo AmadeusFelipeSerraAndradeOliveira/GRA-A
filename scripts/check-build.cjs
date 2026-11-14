@@ -4,7 +4,7 @@ const { spawnSync } = require('node:child_process');
 
 const root = path.resolve(__dirname, '..');
 const publicDir = path.join(root, 'public');
-const sourceFiles = ['app.js', 'admin-push.js', 'push-config.js', 'firebase.js', 'catalog-seed.js', 'cloudinary-config.js', 'dev-server.js', 'scripts/reservation-emulator-smoke.cjs', 'scripts/admin-push-test.cjs', 'scripts/push-worker-test.cjs', 'cloudflare-push/src/index.js', 'cloudinary-worker/src/index.js'];
+const sourceFiles = ['app.js', 'admin-push.js', 'push-config.js', 'firebase.js', 'catalog-seed.js', 'cloudinary-config.js', 'dev-server.js', 'scripts/reservation-emulator-smoke.cjs', 'scripts/admin-push-test.cjs', 'scripts/push-worker-test.cjs', 'scripts/customers-test.cjs', 'cloudflare-push/src/index.js', 'cloudinary-worker/src/index.js'];
 const hostingFiles = ['index.html', 'style.css', 'app.js', 'admin-push.js', 'push-config.js', 'firebase.js', 'catalog-seed.js', 'cloudinary-config.js', 'OneSignalSDKWorker.js', 'assets/graca-editorial-background.jfif', 'assets/graca-logo-transparent.png', 'assets/graca-slogan-oficial-anos-2000.jpg', 'assets/graca-campanha-modelo-ficticia.png', 'assets/graca-comunidade-vip.png'];
 const failed = [];
 const fail = message => failed.push(message);
@@ -60,7 +60,7 @@ const checks = [
   ['soma do pedido é recalculada pelas regras com até seis itens', /function validReservationTotal\(data\)[\s\S]*?let subtotal[\s\S]*?items\[5\]\.quantity \* items\[5\]\.unitPriceCents/.test(rules)],
   ['retirada local é aceita sem campos de endereço obrigatórios', /data\.deliveryMethod == 'Retirada'[\s\S]*?data\.address\.keys\(\)\.size\(\) == 0/.test(rules) && /value="Retirada"/.test(app)],
   ['financeiro pode iniciar novo ciclo após senha e mantém os documentos originais', /reauthenticateWithCredential\(activeUser,EmailAuthProvider\.credential/.test(app) && /settings','finance/.test(app) && /function validFinanceBaseline/.test(rules) && /if\(financeBaselineAt&&closed<financeBaselineAt\)return false/.test(app)],
-  ['pesquisa de clientes inclui contas, VIPs e passantes com pedidos', /function getAdminPassersby/.test(app) && /PASSANTES COM SOLICITAÇÕES/.test(app) && /adminVipSearch/.test(app)],
+  ['pesquisa de clientes inclui contas, VIPs e passantes com pedidos', /function getAdminPassersby/.test(app) && /customer-directory-table/.test(app) && /getAdminCustomerDirectory/.test(app) && /adminVipSearch/.test(app)],
   ['link do WhatsApp e aviso de boas-vindas aparecem na conta e após retornar da confirmação', /vip-dashboard-card/.test(app) && /ABRIR GRUPO NO WHATSAPP/.test(app) && /Seu acesso à Comunidade VIP foi liberado!/.test(app) && /refreshVerificationOnReturn/.test(app)],
   ['formulário de contato confere o elemento antes de limpar', /const formElement=event\.currentTarget/.test(app) && /if\(!formElement\?\.reset\)/.test(app)],
   ['Cloudinary envia token admin ao Worker assinado e não usa preset público', /uploadWorkerName: 'graca-cloudinary-upload'/.test(cloudinary) && /getCloudinaryWorkerEndpoint\(\)/.test(app) && /Authorization:`Bearer \$\{token\}`/.test(app) && !/body\.append\('upload_preset'/.test(app) && /verifyFirebaseToken/.test(fs.readFileSync(path.join(root,'cloudinary-worker/src/index.js'),'utf8')) && /isAdmin\(claims, token, env\)/.test(fs.readFileSync(path.join(root,'cloudinary-worker/src/index.js'),'utf8')) && /validCloudinaryPublicId/.test(rules)],
