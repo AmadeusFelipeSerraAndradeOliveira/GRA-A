@@ -1,7 +1,8 @@
 {
   "scripts": {
     "dev": "node dev-server.js",
-    "build": "node scripts/check-build.cjs"
+    "build": "node scripts/check-build.cjs",
+    "test:push": "node --test scripts/admin-push-test.cjs"
   },
   "dependencies": {
     "cloudinary": "^2.11.0",

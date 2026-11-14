@@ -4,7 +4,7 @@ const { spawnSync } = require('node:child_process');
 
 const root = path.resolve(__dirname, '..');
 const publicDir = path.join(root, 'public');
-const sourceFiles = ['app.js', 'admin-push.js', 'push-config.js', 'firebase.js', 'catalog-seed.js', 'cloudinary-config.js', 'dev-server.js', 'scripts/reservation-emulator-smoke.cjs', 'scripts/cloudinary-worker-smoke.mjs', 'cloudflare-push/src/index.js', 'cloudinary-worker/src/index.js'];
+const sourceFiles = ['app.js', 'admin-push.js', 'push-config.js', 'firebase.js', 'catalog-seed.js', 'cloudinary-config.js', 'dev-server.js', 'scripts/reservation-emulator-smoke.cjs', 'scripts/admin-push-test.cjs', 'cloudflare-push/src/index.js', 'cloudinary-worker/src/index.js'];
 const hostingFiles = ['index.html', 'style.css', 'app.js', 'admin-push.js', 'push-config.js', 'firebase.js', 'catalog-seed.js', 'cloudinary-config.js', 'OneSignalSDKWorker.js', 'assets/graca-editorial-background.jfif', 'assets/graca-logo-transparent.png', 'assets/graca-slogan-oficial-anos-2000.jpg', 'assets/graca-campanha-modelo-ficticia.png', 'assets/graca-comunidade-vip.png'];
 const failed = [];
 const fail = message => failed.push(message);

@@ -39,6 +39,10 @@ As reservas novas aparecem em tempo real quando o painel administrativo está ab
 
 ### Ativar notificações fora do navegador
 
+O aplicativo OneSignal atual aceita inscrições somente em `https://graca-454ff.web.app`. Em outros endereços (incluindo `firebaseapp.com`, domínio próprio e ambiente local), o botão abre esse painel para concluir a ativação; entre novamente na conta administrativa se necessário. `push-config.js` registra esse endereço em `oneSignalOrigin`. Permitir uma origem no Worker não altera a origem aceita pelo OneSignal. Para usar outro domínio, configure um aplicativo OneSignal para ele e ajuste também os IDs e as origens do serviço de avisos.
+
+O SDK inicializa uma única vez por página, inclusive quando o painel é aberto várias vezes. Se a inicialização falhar, recarregue a página; uma falha no download do script permite tentar novamente. Valide a integração local com `node --test scripts/admin-push-test.cjs`.
+
 1. O app OneSignal **GRAÇA GMC - Avisos administrativos** já está criado com Web Push para `https://graca-454ff.web.app`. O App ID público já está preenchido em `push-config.js` e `cloudflare-push/wrangler.toml`.
 2. Entre em uma conta Cloudflare e abra um terminal na pasta `cloudflare-push`:
 

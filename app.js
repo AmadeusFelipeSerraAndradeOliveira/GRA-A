@@ -21,7 +21,7 @@ import {
 import app from "./firebase.js";
 import { exampleProductTemplates } from "./catalog-seed.js";
 import { CLOUDINARY_CONFIG } from "./cloudinary-config.js";
-import { enableAdminPush, isAdminPushConfigured, notifyAdminPushForOrder, prepareAdminPush } from "./admin-push.js";
+import { adminPushActivationUrl, isAdminPushOrigin, enableAdminPush, isAdminPushConfigured, notifyAdminPushForOrder, prepareAdminPush } from "./admin-push.js";
 
 /* GRAÇA GMC · vitrine, reservas e gestão operacional no Firebase. */
 const auth = getAuth(app);
@@ -1500,6 +1500,15 @@ function renderAdminOverview(el) {
   el.innerHTML=`<div class="section-kicker">GRAÇA / PAINEL</div><h2>VISÃO GERAL</h2><p>Atalhos e indicadores da operação diária.</p><div class="admin-cards"><div class="metric"><span>PRODUTOS PUBLICADOS</span><strong>${activeProducts().length}</strong></div><div class="metric"><span>AGUARDANDO CONFIRMAÇÃO</span><strong>${pending}</strong></div><div class="metric"><span>EM ATENDIMENTO</span><strong>${inProgress}</strong></div><div class="metric"><span>CONTAS VIP</span><strong>${customers.length}</strong></div></div><div class="admin-toolbar"><div class="admin-shortcuts"><button class="mini-button primary" data-admin-shortcut="orders">ABRIR PEDIDOS</button><button class="mini-button" data-admin-shortcut="products">GERENCIAR PRODUTOS</button><button class="mini-button" data-admin-shortcut="analytics">ABRIR FINANCEIRO</button></div><button class="mini-button" id="enableAdminAlerts">${pushConfigured?'ATIVAR AVISOS EM SEGUNDO PLANO':'CONFIGURAR AVISOS EM SEGUNDO PLANO'}</button></div><h3>ÚLTIMAS SOLICITAÇÕES</h3>${recent.length?table(['CÓDIGO','CLIENTE','DATA','VALOR ESTIMADO','STATUS'],recent.map(order=>[htm(order.confirmationCode||order.id),htm(order.customerName),safeDate(order.createdAt).toLocaleDateString('pt-BR'),money(displayTotal(order)),htm(order.status)])):'<div class="empty-state">AS NOVAS SOLICITAÇÕES APARECERÃO AQUI EM TEMPO REAL.</div>'}<p class="fine-print">${pushConfigured?'Com o serviço conectado e este dispositivo inscrito, os avisos podem chegar mesmo com o painel fechado.':'PENDENTE: avisos com o painel fechado ainda exigem conectar o OneSignal e publicar o serviço externo. Até essa configuração, os pedidos aparecem em tempo real quando o painel está aberto.'} O WhatsApp continua exigindo o envio da mensagem.</p>`;
   $$('[data-admin-shortcut]').forEach(button=>button.onclick=()=>{adminTab=button.dataset.adminShortcut;renderAdmin();});
   const alertButton=$('#enableAdminAlerts');
+  if(pushConfigured&&!isAdminPushOrigin()){
+    alertButton.textContent='ABRIR PAINEL PARA ATIVAR AVISOS';
+    alertButton.onclick=()=>window.location.assign(adminPushActivationUrl());
+    const notice=document.createElement('p');
+    notice.className='fine-print';
+    notice.textContent=`Os avisos são ativados em ${new URL(adminPushActivationUrl()).hostname}. Abra esse painel e entre na conta administrativa para inscrever este dispositivo.`;
+    alertButton.closest('.admin-toolbar').after(notice);
+    return;
+  }
   if(pushConfigured){
     alertButton.disabled=true;
     alertButton.textContent='PREPARANDO AVISOS…';
@@ -1511,7 +1520,8 @@ function renderAdminOverview(el) {
       console.warn('Não foi possível preparar os avisos em segundo plano:',error);
       if(!alertButton.isConnected)return;
       alertButton.disabled=false;
-      alertButton.textContent='TENTAR ATIVAR AVISOS';
+      alertButton.textContent=error.requiresReload?'RECARREGAR PARA ATIVAR AVISOS':'TENTAR ATIVAR AVISOS';
+      if(error.requiresReload)alertButton.onclick=()=>window.location.reload();
     });
   }
   alertButton.onclick=async()=>{
@@ -1835,6 +1845,7 @@ onAuthStateChanged(auth,async incomingUser=>{
   else {currentUser=null;isAdmin=false;}
   memberNav();void refreshVipAccessNotice(user);updateCatalogSubscriptions();subscribeUserData(user);renderCart();
   if(user?.emailVerified&&!user.isAnonymous&&cartCoupon)void applyCartCoupon(cartCoupon);
+  if(location.hash==='#admin')await openAdmin();
 });
 
 let refreshingVerificationOnReturn=false;
