@@ -67,6 +67,9 @@ async function getOneSignal() {
       };
       document.head.append(script);
     }
+  }).then(OneSignal=>{
+    if(window.__gracaOneSignalInit?.appId===appId)window.__gracaOneSignalInit.sdk=OneSignal;
+    return OneSignal;
   }).catch(error=>{
     // A failed SDK init still consumes its one initialization per page.
     // Only a script download failure can safely be retried without a reload.
@@ -82,12 +85,12 @@ async function getOneSignal() {
   return oneSignalPromise;
 }
 
-async function waitForSubscriptionId(OneSignal,timeoutMs=20000) {
+async function waitForSubscriptionId(OneSignal,timeoutMs=45000) {
   const started=Date.now();
   while(Date.now()-started<timeoutMs){
-    const subscriptionId=OneSignal.User?.PushSubscription?.id;
-    if(subscriptionId)return subscriptionId;
-    await new Promise(resolve=>setTimeout(resolve,500));
+    const subscription=OneSignal.User?.PushSubscription;
+    if(subscription?.id&&subscription.token&&subscription.optedIn===true)return subscription.id;
+    await new Promise(resolve=>setTimeout(resolve,Math.min(500,timeoutMs)));
   }
   return null;
 }
@@ -126,19 +129,23 @@ export async function enableAdminPush(user) {
   if(!user?.email||user.isAnonymous)throw new Error('Use uma conta administrativa com e-mail confirmado.');
   if(user.emailVerified!==true)throw new Error('Confirme o e-mail da conta administrativa antes de ativar avisos.');
   if(!workerBaseUrl())throw new Error('O serviço externo ainda não foi publicado. Configure a URL HTTPS no arquivo push-config.js.');
-  const OneSignal=await getOneSignal();
-  if(!OneSignal.Notifications.isPushSupported())throw new Error('Este navegador ou dispositivo não oferece avisos web.');
-  const permission=OneSignal.Notifications.permissionNative||window.Notification?.permission||'default';
+  if(!isAdminPushOrigin())throw new Error(`Ative os avisos no painel em ${adminPushActivationUrl()}.`);
+  // Use the SDK prepared before the tap, so the permission request stays inside
+  // the browser's user activation instead of waiting for initialization first.
+  const ready=window.__gracaOneSignalInit;
+  const OneSignal=ready?.appId===String(ADMIN_PUSH_CONFIG.oneSignalAppId||'').trim()&&ready.sdk?ready.sdk:await getOneSignal();
+  if(!OneSignal.Notifications.isPushSupported())throw new Error('Abra o site diretamente no Chrome do Android, fora do modo anônimo e de navegadores internos de aplicativos. Este navegador não disponibilizou notificações push.');
+  const permission=window.Notification?.permission||OneSignal.Notifications.permissionNative||'default';
   if(permission==='denied')throw new Error('Os avisos estão bloqueados neste navegador. Libere as notificações nas configurações do site e tente novamente.');
   if(permission!=='granted'){
-    const granted=await OneSignal.Notifications.requestPermission();
-    if(!granted&&OneSignal.Notifications.permissionNative!=='granted'&&window.Notification?.permission!=='granted'){
-      throw new Error('Permita os avisos na janela do navegador para concluir a ativação.');
+    await OneSignal.Notifications.requestPermission();
+    if(window.Notification?.permission!=='granted'&&OneSignal.Notifications.permission!==true&&OneSignal.Notifications.permissionNative!=='granted'){
+      throw new Error('O Chrome ainda não liberou os avisos. Toque no ícone ao lado do endereço, abra Permissões e permita Notificações. Confira também as notificações do Chrome nas configurações do Android.');
     }
   }
-  if(OneSignal.User.PushSubscription.optedIn!==true)await OneSignal.User.PushSubscription.optIn();
+  if(OneSignal.User.PushSubscription.optedIn!==true||!OneSignal.User.PushSubscription.token||!OneSignal.User.PushSubscription.id)await OneSignal.User.PushSubscription.optIn();
   const subscriptionId=await waitForSubscriptionId(OneSignal);
-  if(!subscriptionId)throw new Error('O navegador não confirmou a inscrição. Permita os avisos e tente novamente.');
+  if(!subscriptionId)throw new Error('A permissão foi liberada, mas o registro deste aparelho ainda não terminou. Mantenha o Chrome aberto com internet e tente ativar novamente.');
   await workerRequest('/admin/subscribe',user,{subscriptionId});
   return true;
 }

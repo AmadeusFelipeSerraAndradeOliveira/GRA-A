@@ -1509,17 +1509,24 @@ function renderAdminOverview(el) {
     alertButton.closest('.admin-toolbar').after(notice);
     return;
   }
+  const pushStatus=document.createElement('p');
+  pushStatus.className='fine-print';
+  pushStatus.setAttribute('role','status');
+  alertButton.closest('.admin-toolbar').after(pushStatus);
   if(pushConfigured){
     alertButton.disabled=true;
     alertButton.textContent='PREPARANDO AVISOS…';
+    pushStatus.textContent='Preparando notificações neste aparelho. Aguarde o botão ficar disponível.';
     void prepareAdminPush().then(()=>{
       if(!alertButton.isConnected)return;
       alertButton.disabled=false;
       alertButton.textContent='ATIVAR AVISOS EM SEGUNDO PLANO';
+      pushStatus.textContent='Toque em ativar e permita as notificações quando o navegador perguntar.';
     }).catch(error=>{
       console.warn('Não foi possível preparar os avisos em segundo plano:',error);
       if(!alertButton.isConnected)return;
       alertButton.disabled=false;
+      pushStatus.textContent=error.message||'Não foi possível preparar os avisos neste aparelho.';
       alertButton.textContent=error.requiresReload?'RECARREGAR PARA ATIVAR AVISOS':'TENTAR ATIVAR AVISOS';
       if(error.requiresReload)alertButton.onclick=()=>window.location.reload();
     });
@@ -1529,9 +1536,10 @@ function renderAdminOverview(el) {
     if(!isAdminPushConfigured())return toast('Ainda falta conectar o OneSignal e publicar o serviço externo. Consulte o guia no README do projeto.');
     if(!user||!isAdmin)return toast('Entre na conta administrativa antes de ativar avisos.');
     button.disabled=true;button.textContent='ATIVANDO AVISOS…';
+    pushStatus.textContent='Permita as notificações e aguarde a confirmação da inscrição deste aparelho.';
     let enabled=false;
-    try{await enableAdminPush(user);enabled=true;toast('Este dispositivo foi inscrito para receber avisos de novas reservas.');}
-    catch(error){console.warn('Não foi possível ativar avisos em segundo plano:',error);toast(error.message||'Não foi possível ativar os avisos. Confira a configuração do OneSignal.');}
+    try{await enableAdminPush(user);enabled=true;pushStatus.textContent='Inscrição confirmada. Este aparelho está registrado para receber avisos de novas reservas.';toast('Este dispositivo foi inscrito para receber avisos de novas reservas.');}
+    catch(error){console.warn('Não foi possível ativar avisos em segundo plano:',error);pushStatus.textContent=error.message||'Não foi possível ativar os avisos. Confira a configuração do OneSignal.';toast(pushStatus.textContent);}
     finally{button.disabled=false;button.textContent=enabled?'AVISOS ATIVOS NESTE DISPOSITIVO':isAdminPushConfigured()?'ATIVAR AVISOS EM SEGUNDO PLANO':'CONFIGURAR AVISOS EM SEGUNDO PLANO';}
   };
 }
