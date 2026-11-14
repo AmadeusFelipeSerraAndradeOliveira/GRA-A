@@ -17,7 +17,25 @@ As regras deste projeto são destinadas ao Firebase Standard/Native `graca-454ff
 
 O intervalo no Firestore é por telefone de reserva e e-mail do contato, além do limite local no navegador e do campo anti-robô. Esse desenho dificulta a troca de sessão anônima, mas não bloqueia alguém que invente números/e-mails diferentes ou contorne o cliente. O plano Spark não oferece uma função server-side para aplicar limite confiável por endereço IP. Não apresentar esse mecanismo como defesa completa contra bots.
 
-## Verificação pendente
+## Correção do permission-denied nas reservas
 
-As regras devem ser validadas no Firebase Emulator ou pelo validador de implantação antes de tráfego amplo. O Emulator não está configurado neste computador; confirme resultados no Console/Hosting após publicar. Não habilite permissões abertas como `allow read, write: if true` para resolver mensagens de permissão.
+A validação anterior excedia 1.000 expressões avaliadas pelo Firestore, inclusive no cenário de entrega com preço de R$ 1.300, desconto de 10% e estoque por variação. Isso foi reproduzido no emulador como `PERMISSION_DENIED`.
+
+As comparações repetidas foram reduzidas e a validação do catálogo foi distribuída: o limitador de telefone valida os três primeiros itens e o limitador de dispositivo valida os três últimos. O pedido continua exigindo ambos os limitadores no mesmo commit, com ID e timestamp correspondentes. Nenhum pedido é aceito se alguma dessas validações falhar. O esquema exato de criação já exclui metadados de venda; a checagem redundante foi removida apenas da criação.
+
+O teste `scripts/reservation-emulator-smoke.cjs` cobre o cenário relatado, carrinho de seis itens, preço adulterado no primeiro e sexto itens, itens duplicados, sete itens e ausência de cada limitador, além dos casos existentes de cooldown, estoque, cupom e administração. Execute com Java 21+, Node e Firebase CLI:
+
+```powershell
+firebase emulators:exec --only auth,firestore --project demo-graca-gmc "node scripts/reservation-emulator-smoke.cjs"
+```
+
+Para aplicar somente a correção no projeto real, após autenticar uma conta autorizada:
+
+```powershell
+firebase deploy --only firestore:rules --project graca-454ff
+```
+
+## Revisão antes da publicação
+
+As regras são um protótipo que precisa de revisão antes de tráfego amplo. Confirme também uma reserva no site após publicar; a suíte local não comprova que as regras publicadas correspondem ao arquivo corrigido. Não habilite permissões abertas como `allow read, write: if true` para resolver mensagens de permissão.
 

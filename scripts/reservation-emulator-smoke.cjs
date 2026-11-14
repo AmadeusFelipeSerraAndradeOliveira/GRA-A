@@ -67,24 +67,25 @@ async function main() {
 
   const anonymous = await createAnonymousSession();
   const secondAnonymous = await createAnonymousSession();
-  async function submitReservation(session, { orderId, phone, productId: requestedProductId=productId, productName='Produto Smoke Test', size='Único', quantity=1, unitPriceCents=12000, submissionDeviceId=session.submissionDeviceId }) {
-    const subtotalCents = unitPriceCents * quantity;
+  async function submitReservation(session, { orderId, phone, productId: requestedProductId=productId, productName='Produto Smoke Test', size='Único', quantity=1, unitPriceCents=12000, submissionDeviceId=session.submissionDeviceId, deliveryMethod='Retirada', address={}, omitLimiter='', items=[{productId:requestedProductId,name:productName,size,quantity,unitPriceCents}] }) {
+    const subtotalCents = items.reduce((total,item)=>total+item.unitPriceCents*item.quantity,0);
     const orderFields = {
       uid: string(session.localId), submissionDeviceId: string(submissionDeviceId), confirmationCode: string(`GSMOKE${orderId}`), customerName: string('Teste Retirada'), phone: string(phone),
-      items: list([map({ productId: string(requestedProductId), name: string(productName), size: string(size), quantity: integer(quantity), unitPriceCents: integer(unitPriceCents) })]),
-      totalCents: integer(subtotalCents), deliveryMethod: string('Retirada'), address: map({}), pickupDetails: string(''), notes: string(''),
+      items: list(items.map(item=>map({productId:string(item.productId),name:string(item.name),size:string(item.size),quantity:integer(item.quantity),unitPriceCents:integer(item.unitPriceCents)}))),
+      totalCents: integer(subtotalCents), deliveryMethod: string(deliveryMethod), address: map(Object.fromEntries(Object.entries(address).map(([key,value])=>[key,string(value)]))), pickupDetails: string(''), notes: string(''),
       marketingConsent: boolean(false), status: string('Aguardando confirmação'), statusHistory: list([string('Aguardando confirmação')]),
       stockApplied: boolean(false), stockRestored: boolean(false)
     };
     const writes = [
       { update: { name: `projects/${projectId}/databases/(default)/documents/orders/${orderId}`, fields: orderFields },
+        currentDocument: { exists: false },
         updateTransforms: [{ fieldPath: 'createdAt', setToServerValue: 'REQUEST_TIME' }, { fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }] },
       { update: { name: `projects/${projectId}/databases/(default)/documents/reservationLimits/${phone}`, fields: { phone: string(phone), lastOrderId: string(orderId) } },
         updateTransforms: [{ fieldPath: 'lastSubmittedAt', setToServerValue: 'REQUEST_TIME' }] },
       { update: { name: `projects/${projectId}/databases/(default)/documents/reservationSessionLimits/${submissionDeviceId}`, fields: { deviceId: string(submissionDeviceId), lastOrderId: string(orderId) } },
         updateTransforms: [{ fieldPath: 'lastSubmittedAt', setToServerValue: 'REQUEST_TIME' }] }
     ];
-    return commit(session.idToken, writes);
+    return commit(session.idToken, writes.filter(write=>!omitLimiter||!write.update.name.includes(`/documents/${omitLimiter}/`)));
   }
   async function submitContact(session, { messageId, email, submissionDeviceId=session.submissionDeviceId }) {
     const fields = {
@@ -100,6 +101,45 @@ async function main() {
         updateTransforms: [{ fieldPath: 'lastSubmittedAt', setToServerValue: 'REQUEST_TIME' }] }
     ]);
   }
+  // Regression: delivery, discounted price and per-variation stock from the reported 403.
+  const deliveryProductId='delivery-discount-test';
+  await commit('owner',[{update:{name:`projects/${projectId}/databases/(default)/documents/products/${deliveryProductId}`,fields:{
+    name:string('iPhone 13 128 GB'),price:integer(1300),discount:integer(10),active:boolean(true),stock:integer(2),
+    sizes:list([string('64gb'),string('128gb')]),stockBySize:map({'64gb':integer(1),'128gb':integer(1)})
+  }}}]);
+  const deliverySession=await createAnonymousSession();
+  await submitReservation(deliverySession,{orderId:'delivery-discount-order-01',phone:'63999887001',productId:deliveryProductId,
+    productName:'iPhone 13 128 GB',size:'64gb',unitPriceCents:117000,deliveryMethod:'Entrega',
+    address:{zip:'77000000',street:'Rua de teste',number:'9',district:'Centro',city:'Palmas',state:'TO'}});
+  process.stdout.write('PASS: entrega com desconto de 10% e estoque por variação foi aceita.\n');
+  const invalidPriceSession=await createAnonymousSession();
+  let invalidPriceRejected=false;
+  try{await submitReservation(invalidPriceSession,{orderId:'delivery-invalid-price-01',phone:'63999887002',productId:deliveryProductId,
+    productName:'iPhone 13 128 GB',size:'64gb',unitPriceCents:1});}
+  catch(error){invalidPriceRejected=/403/.test(error.message);}
+  if(!invalidPriceRejected)throw new Error('o emulador permitiu alterar o preço do produto na reserva.');
+  process.stdout.write('PASS: preço adulterado continuou recusado.\n');
+  const sixSizes=['A','B','C','D','E','F'];
+  await commit('owner',[{update:{name:`projects/${projectId}/databases/(default)/documents/products/six-items-test`,fields:{
+    name:string('Seis variações'),price:integer(120),active:boolean(true),stock:integer(6),
+    sizes:list(sixSizes.map(string)),stockBySize:map(Object.fromEntries(sixSizes.map(size=>[size,integer(1)])))
+  }}}]);
+  const sixItems=sixSizes.map(size=>({productId:'six-items-test',name:'Seis variações',size,quantity:1,unitPriceCents:12000}));
+  await submitReservation(await createAnonymousSession(),{orderId:'six-items-order-01',phone:'63999887003',items:sixItems});
+  process.stdout.write('PASS: pedido com seis combinações válidas foi aceito.\n');
+  for(const [index,options] of [
+    {items:sixItems.map((item,index)=>index===5?{...item,unitPriceCents:1}:item)},
+    {items:[...sixItems.slice(0,5),sixItems[0]]},
+    {items:[...sixItems,sixItems[0]]},
+    {items:sixItems,omitLimiter:'reservationLimits'},
+    {items:sixItems,omitLimiter:'reservationSessionLimits'}
+  ].entries()){
+    let denied=false;
+    try{await submitReservation(await createAnonymousSession(),{orderId:`invalid-cart-order-${index}`,phone:`6399988710${index}`,...options});}
+    catch(error){denied=/403/.test(error.message);}
+    if(!denied)throw new Error(`o caso inválido ${index} não foi recusado corretamente.`);
+  }
+  process.stdout.write('PASS: sexto preço adulterado, duplicatas, sete itens e ausência de cada limitador foram recusados.\n');
   await submitReservation(anonymous, { orderId: 'pickup-smoke-order-01', phone: '63999887766' });
   process.stdout.write('PASS: cliente anônimo gravou uma solicitação com retirada local e endereço vazio.\n');
   let crossSessionPhoneRejected = false;
